@@ -22,7 +22,7 @@
   (string #xc0))
 
 (defun msgpack--encode-bool (value)
-  (if value (string #xc2) (string #xc3)))
+  (if value (string #xc3) (string #xc2)))
 
 (defun msgpack--pack-short-int (value)
   (bindat-pack `((h byte)) `((h . ,value))))
@@ -64,24 +64,26 @@
   (error "floating point not supported"))
 
 (defun msgpack--pack-short-string (value)
-  (let* ((length (length value))
+  (let* ((utf8 (encode-coding-string value 'utf-8))
+         (length (length utf8))
          (header (logior #xa0 length)))
-    (bindat-pack `((h byte) (v str ,length)) `((h . ,header) (v . ,value)))))
+    (bindat-pack `((h byte) (v str ,length)) `((h . ,header) (v . ,utf8)))))
 
 (defun msgpack--pack-string (header type value)
   (let ((length (length value)))
     (bindat-pack `((h byte) (l ,type) (v str ,length)) `((h . ,header) (l . ,length) (v . ,value)))))
 
 (defun msgpack--encode-string (value)
-  (let ((length (length value)))
+  (let* ((utf8 (encode-coding-string value 'utf-8))
+         (length (length utf8)))
     (cond ((<= length 31)
-           (msgpack--pack-short-string value))
+           (msgpack--pack-short-string utf8))
           ((<= length #xff)
-           (msgpack--pack-string #xd9 'u8 value))
+           (msgpack--pack-string #xd9 'u8 utf8))
           ((<= length #xffff)
-           (msgpack--pack-string #xda 'u16 value))
+           (msgpack--pack-string #xda 'u16 utf8))
           ((<= length #xffffffff)
-           (msgpack--pack-string #xdb 'u32 value))
+           (msgpack--pack-string #xdb 'u32 utf8))
           (t
            (error "string too long. length: %S" length)))))
 
@@ -150,13 +152,18 @@
       (:map (msgpack--encode-map content)))))
 
 (defun msgpack-encode-value (value)
-  (etypecase value
-    (null (msgpack--encode-nil))
-    (integer (msgpack--encode-int value))
-    (float (msgpack--encode-float value))
-    (string (msgpack--encode-string value))
-    (vector (msgpack--encode-array value))
-    (list (msgpack--encode-custom value))))
+  (if (symbolp value)
+      (ecase value
+        ((nil) (msgpack--encode-nil))
+        (:true (msgpack--encode-bool t))
+        (:false (msgpack--encode-bool nil)))
+    (etypecase value
+      (null (msgpack--encode-nil))
+      (integer (msgpack--encode-int value))
+      (float (msgpack--encode-float value))
+      (string (msgpack--encode-string value))
+      (vector (msgpack--encode-array value))
+      (list (msgpack--encode-custom value)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Decoding
@@ -171,26 +178,44 @@
 (defun msgpack--decode-true (offset)
   (cons :true (1+ offset)))
 
+(defun msgpack--decode-bin (value offset int-length)
+  (let* ((array-length (msgpack--decode-uint-block value (1+ offset) int-length))
+         (array-offset (+ 1 offset int-length))
+         (result (make-string array-length 0 nil)))
+    (loop for i from 0 below array-length
+          for array-pos from array-offset
+          do (setf (aref result i) (aref value array-pos)))
+    (cons result (+ array-offset array-length))))
+
 (defun msgpack--decode-short-int (value offset)
   (cons (logand #x7f (aref value offset))
         (1+ offset)))
 
-(defun msgpack--decode-uint (value offset length)
+(defun msgpack--u->int (value bits)
+  (if (zerop (logand (ash 1 (1- bits)) value))
+      value
+    (1- (- (logxor (1- (expt 2 bits)) value)))))
+
+(defun msgpack--decode-short-neg-int (value offset)
+  (cons (msgpack--u->int (logand #x1f value) 5)
+        (1+ offset)))
+
+(defun msgpack--decode-uint-block (value offset length)
   (loop with result = 0
-        for i from (1+ offset) below (+ 1 offset length)
+        for i from offset below (+ offset length)
         for ch = (aref value i)
         do (setq result (logior (ash result 8) ch))
-        finally (return (cons result i))))
+        finally (return result)))
+
+(defun msgpack--decode-uint (value offset length)
+  (cons (msgpack--decode-uint-block value (1+ offset) length) (+ 1 offset length)))
 
 (defun msgpack--decode-int (value offset length)
   (loop with result = 0
         for i from (1+ offset) below (+ 1 offset length)
         for ch = (aref value i)
         do (setq result (logior (ash result 8) ch))
-        finally (return (cons (if (zerop (logand (ash 1 (1- (* 8 length))) result))
-                                  result
-                                (1- (- (logxor (1- (expt 2 (* 8 length))) result))))
-                              i))))
+        finally (return (cons (msgpack--u->int result (* 8 length)) i))))
 
 (defun msgpack--decode-short-map (value offset)
   (let ((length (logand #x0f (aref value offset)))
@@ -203,32 +228,49 @@
                       do (setq i new-offset)))
           i)))
 
-(defun msgpack--decode-short-string (value offset)
-  (let* ((length (logand #x1f (aref value offset)))
-         (result (make-string length 0 nil))
-         (i (1+ offset)))
-    (cons (loop repeat length
-                for string-pos from 0
-                do (setf (aref result string-pos) (aref value i))
-                do (incf i))
-          i)))
+(defun msgpack--decode-string-utf-8 (value offset length)
+  (let ((result (make-string length 0 nil)))
+    (loop for i from offset below (+ length offset)
+          for string-pos from 0
+          do (setf (aref result string-pos) (aref value i)))
+    (decode-coding-string result 'utf-8)))
 
-(defun msgpack--decode-short-array (value offset)
-  (let ((length (logand #x0f (aref value offset)))
-        (i (1+ offset)))
+(defun msgpack--decode-short-string (value offset)
+  (let* ((length (logand #x1f (aref value offset))))
+    (cons (msgpack--decode-string-utf-8 value (1+ offset) length) (+ 1 offset length))))
+
+(defun msgpack--decode-array-values (value offset length)
+  (let ((i offset))
     (cons (coerce (loop repeat length
                         for (v . new-offset) = (msgpack--decode-value-internal value i)
                         collect v
                         do (setq i new-offset))
-             'vector)
+                  'vector)
           i)))
+
+(defun msgpack--decode-short-array (value offset)
+  (let ((length (logand #x0f (aref value offset))))
+    (msgpack--decode-array-values value (1+ offset) length)))
+
+(defun msgpack--decode-array (value offset int-length)
+  (let ((length (msgpack--decode-uint-block value (1+ offset) int-length)))
+    (msgpack--decode-array-values value (+ 1 offset int-length) length)))
+
+(defun msgpack--decode-string (value offset int-length)
+  (let* ((string-length (msgpack--decode-uint-block value (1+ offset) int-length))
+         (string-pos (+ 1 offset int-length)))
+    (cons (msgpack--decode-string-utf-8 value string-pos string-length) (+ string-pos string-length))))
 
 (defun msgpack--decode-value-internal (value offset)
   (let ((v (aref value offset)))
     (cond ((zerop (logand #x80 v))
            (msgpack--decode-short-int value offset))
+          ((eql (logand #xe0 v) #xe)
+           (msgpack--decode-short-neg-int value offset))
           ((eql (logand #xf0 v) #x80)
            (msgpack--decode-short-map value offset))
+          ((eql (logand #xf0 v) #x90)
+           (msgpack--decode-short-array value offset))
           ((eql (logand #xe0 v) #xa0)
            (msgpack--decode-short-string value offset))
           ((eql v #xc0)
@@ -237,6 +279,12 @@
            (msgpack--decode-false offset))
           ((eql v #xc3)
            (msgpack--decode-true offset))
+          ((eql v #xc4)
+           (msgpack--decode-bin value offset 1))
+          ((eql v #xc5)
+           (msgpack--decode-bin value offset 2))
+          ((eql v #xc6)
+           (msgpack--decode-bin value offset 4))
           ((eql v #xcc)
            (msgpack--decode-uint value offset 1))
           ((eql v #xcd)
@@ -253,8 +301,16 @@
            (msgpack--decode-int value offset 4))
           ((eql v #xd3)
            (msgpack--decode-int value offset 8))
-          ((eql (logand #xf0 v) #x90)
-           (msgpack--decode-short-array value offset))
+          ((eql v #xdc)
+           (msgpack--decode-array value offset 2))
+          ((eql v #xdd)
+           (msgpack--decode-array value offset 4))
+          ((eql v #xd9)
+           (msgpack--decode-string value offset 1))
+          ((eql v #xda)
+           (msgpack--decode-string value offset 2))
+          ((eql v #xdb)
+           (msgpack--decode-string value offset 4))
           (t
            (error "unable to decode values of type: 0x%02x" v)))))
 
