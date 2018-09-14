@@ -41,7 +41,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<S-return>") 'keybase-insert-nl)
     (define-key map (kbd "RET") 'keybase-send-input-line)
-    (define-key map (kbd "@") 'keybase-insert-user)
+    ;;(define-key map (kbd "@") 'keybase-insert-user)
     (define-key map (kbd "C-c C-d") 'keybase-delete-message)
     map))
 
@@ -80,6 +80,27 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
             finally (when (< p end)
                       (princ (buffer-substring p end)))))))
 
+(defun keybase-insert-nl ()
+  "Insert a newline into the message."
+  (interactive)
+  (insert "\n"))
+
+(defun keybase-insert-user ()
+  "Select a username to be inserted into the new message."
+  (interactive)
+  (error "can't insert user"))
+
+(defun keybase-delete-message ()
+  (interactive)
+  (let ((msgid (keybase--find-message-at-point (point))))
+    (if msgid
+        (when (yes-or-no-p "Really delete message? ")
+          (keybase--request-api `((method . "delete")
+                                  (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                         (message_id . ,msgid))))))))
+      ;; ELSE: No message at point
+      (message "No message at point"))))
+
 (defun keybase--buffer-closed ()
   (setq *keybase--active-buffers* (cl-remove (current-buffer) *keybase--active-buffers* :key #'cdr :test #'eq)))
 
@@ -87,7 +108,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   ;; First ensure that the listener is running
   (keybase--find-process-buffer)
   ;; Create the buffer
-  (let ((buffer (generate-new-buffer (format "*keybase-%s-%s*" (first channel-info) (second channel-info)))))
+  (let ((buffer (generate-new-buffer (format "*keybase %s - %s*" (first channel-info) (second channel-info)))))
     (with-current-buffer buffer
       (keybase-channel-mode)
       (setq-local keybase--channel-info channel-info)
@@ -108,6 +129,21 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (let ((time (seconds-to-time (/ timestamp 1000))))
     (format-time-string "%Y-%m-%d %H:%M:%S" time)))
 
+(defun keybase--insert-message-content (pos id timestamp sender message)
+  (goto-char pos)
+  (let ((inhibit-read-only t))
+    (let ((start (point)))
+      (insert (propertize (format "[%s] %s\n" sender (keybase--format-date timestamp))
+                          'face 'keybase-message-from))
+      (when (> (length message) 0)
+        (insert (concat message "\n\n")))
+      (add-text-properties start (point)
+                           (list 'read-only t
+                                 'keybase-message-id id
+                                 'keybase-timestamp timestamp
+                                 'keybase-sender sender
+                                 'front-sticky '(read-only))))))
+
 (defun keybase--insert-message (id timestamp sender message)
   (save-excursion
     (goto-char keybase--output-marker)
@@ -118,19 +154,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
                          do (setq prev-pos pos)
                          until (= pos (point-min))
                          finally (return prev-pos))))
-      (goto-char new-pos)
-      (let ((inhibit-read-only t))
-        (let ((start (point)))
-          (insert (propertize (format "[%s] %s\n" sender (keybase--format-date timestamp))
-                              'face 'keybase-message-from))
-          (when (> (length message) 0)
-            (insert (concat message "\n\n")))
-          (add-text-properties start (point)
-                               (list 'read-only t
-                                     'keybase-message-id id
-                                     'keybase-timestamp timestamp
-                                     'keybase-sender sender
-                                     'front-sticky '(read-only))))))))
+      (keybase--insert-message-content new-pos id timestamp sender message))))
 
 (defun keybase--find-message-in-log (id)
   (loop with curr = (point-min)
@@ -142,41 +166,68 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
         do (setq curr pos)
         finally (return nil)))
 
+(defun keybase--find-message-at-point (pos)
+  (get-char-property pos 'keybase-message-id))
+
 (defun keybase--handle-post-message (json)
   (let ((id (keybase--json-find json '(id)))
         (message (keybase--json-find json '(message)))
         (sender (keybase--json-find json '(sender)))
         (timestamp (keybase--json-find json '(ctime))))
-    ;; If the message already exists in the buffer, delete it
-    (keybase--delete-message id)
     (keybase--insert-message id timestamp sender message)))
+
+(defun keybase--delete-message-by-pos (pos)
+  (destructuring-bind (start end)
+      pos
+    (let ((inhibit-read-only t))
+      (delete-region start end))))
 
 (defun keybase--delete-message (id)
   (let ((old-message-pos (keybase--find-message-in-log id)))
-    (if old-message-pos
-        (destructuring-bind (start end)
-            old-message-pos
-          (let ((inhibit-read-only t))
-            (delete-region start end))
-          t)
-      nil)))
+    (when old-message-pos
+      (keybase--delete-message-by-pos old-message-pos))))
 
 (defun keybase--handle-delete (json)
   (let ((message-list (keybase--json-find json '(target_msg_ids))))
     (loop for id across message-list
           do (keybase--delete-message id))))
 
-(defun keybase--handle-incoming-chat-message (json)
+(defun keybase--handle-edit (json)
+  (let ((old-message-pos (keybase--find-message-in-log (keybase--json-find json '(target_msg_id)))))
+    ;; If the message isn't already displayed, we don't need to do
+    ;; anything (we don't want old messages added just because someone
+    ;; edited them)
+    (when old-message-pos
+      (save-excursion
+        (let* ((msg (car old-message-pos))
+               (old-timestamp (get-char-property msg 'keybase-timestamp)))
+          (unless old-timestamp
+            (error "no timestamp for previous message"))
+          (keybase--delete-message-by-pos old-message-pos)
+          ;; An UPDATE message contains the same fields as a TEXT message.
+          (let ((id (keybase--json-find json '(id)))
+                (message (keybase--json-find json '(message)))
+                (sender (keybase--json-find json '(sender))))
+            (keybase--insert-message-content msg id old-timestamp sender message)))))))
+
+(cl-defun keybase--handle-incoming-chat-message (json)
   (message "Incoming message: %S" json)
   (let* ((channel-info (list (keybase--json-find json '(conv_name))
                              (keybase--json-find json '(channel))))
          (buffer (keybase--find-channel-buffer channel-info)))
     (with-current-buffer buffer
-      (let ((type (keybase--json-find json '(type))))
-       (cond ((equal type "TEXT")
-              (keybase--handle-post-message json))
-             ((equal type "DELETE")
-              (keybase--handle-delete json)))))))
+      (let ((activity-source (keybase--json-find json '(activity_source))))
+        ;; For now, just ignore all local activity sources
+        (when (equal activity-source "LOCAL")
+          (return-from keybase--handle-incoming-chat-message nil))
+        ;; Dispatch on the message type
+        (let ((type (keybase--json-find json '(type))))
+          (cond ((equal type "TEXT")
+                 (keybase--handle-post-message json))
+                ((equal type "DELETE")
+                 (keybase--handle-delete json))
+                ((equal type "EDIT")
+                 (keybase--handle-edit json))))))))
 
 (defun keybase--request-api (arg)
   (let ((output-buf (generate-new-buffer " *keybase api*")))
@@ -190,6 +241,11 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
             (json-parse-buffer :object-type 'alist)))
       (kill-buffer output-buf))))
 
+(defun keybase--channel-info-as-json (channel-info)
+  `((name . ,(first channel-info))
+    (topic_name . ,(second channel-info))
+    (members_type . "team")))
+
 (defun keybase--list-channels ()
   (let ((result (keybase--request-api '((method . "list")))))
     (loop for conversation across (keybase--json-find result '(result conversations))
@@ -201,9 +257,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (unless keybase--channel-info
     (error "No channel info available in this buffer"))
   (keybase--request-api `((method . "send")
-                          (params . ((options . ((channel . ((name . ,(first keybase--channel-info))
-                                                             (topic_name . ,(second keybase--channel-info))
-                                                             (members_type . "team")))
+                          (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
                                                  (message . ((body . ,str))))))))))
 
 (defun keybase-send-input-line ()
