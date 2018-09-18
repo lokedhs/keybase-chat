@@ -234,7 +234,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   )
 
 (cl-defun keybase--handle-incoming-chat-message (json)
-  (let ((msg (keybase--json-find json '(msg msg) :error-if-missing nil)))
+  (let ((msg (keybase--json-find json '(msg) :error-if-missing nil)))
     (when msg
       (let* ((channel-info (keybase--parse-channel-name (keybase--json-find msg '(channel))))
              (buffer (keybase--find-channel-buffer channel-info :if-missing :ignore)))
