@@ -23,14 +23,16 @@
   "Face used to display the 'from' part of a message."
   :group 'keybase)
 
-(defun keybase--json-find (obj path)
+(cl-defun keybase--json-find (obj path &key (error-if-missing t))
   (let ((curr obj))
     (loop for path-entry in path
           for node = (assoc path-entry curr)
           unless node
-          do (error "Node not found in json: %S" path-entry)
-          do (setq curr (cdr node)))
-    curr))
+          do (if error-if-missing
+                 (error "Node not found in json: %S" path-entry)
+               (return nil))
+          do (setq curr (cdr node))
+          finally (return curr))))
 
 (defvar *keybase--proc-buf* nil)
 (defvar *keybase--active-buffers* nil
@@ -117,13 +119,15 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
       (keybase--load-initial-messages)
       buffer)))
 
-(cl-defun keybase--find-channel-buffer (channel-info &key create-if-missing)
+(cl-defun keybase--find-channel-buffer (channel-info &key (if-missing :error))
+  (unless (member if-missing '(:error :create :ignore))
+    (error "Illegal argument to if-missing: %S" if-missing))
   (let ((e (find channel-info *keybase--active-buffers* :key #'car :test #'equal)))
     (cond (e
            (cdr e))
-          (create-if-missing
+          ((eq if-missing :create)
            (keybase--create-buffer channel-info))
-          (t
+          ((eq if-missing :error)
            (error "No buffer for channel %S" channel-info)))))
 
 (defun keybase--load-initial-messages ()
@@ -142,7 +146,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
           do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body))))))
 
 (defun keybase--format-date (timestamp)
-  (let ((time (seconds-to-time (/ timestamp 1000))))
+  (let ((time (seconds-to-time timestamp)))
     (format-time-string "%Y-%m-%d %H:%M:%S" time)))
 
 (defun keybase--insert-message-content (pos id timestamp sender message)
@@ -187,9 +191,9 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 
 (defun keybase--handle-post-message (json)
   (let ((id (keybase--json-find json '(id)))
-        (message (keybase--json-find json '(message)))
-        (sender (keybase--json-find json '(sender)))
-        (timestamp (keybase--json-find json '(ctime))))
+        (message (keybase--json-find json '(content text body)))
+        (sender (keybase--json-find json '(sender username)))
+        (timestamp (keybase--json-find json '(sent_at))))
     (keybase--insert-message id timestamp sender message)))
 
 (defun keybase--delete-message-by-pos (pos)
@@ -204,12 +208,13 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
       (keybase--delete-message-by-pos old-message-pos))))
 
 (defun keybase--handle-delete (json)
-  (let ((message-list (keybase--json-find json '(target_msg_ids))))
+  (let ((message-list (keybase--json-find json '(content delete messageIDs))))
     (loop for id across message-list
           do (keybase--delete-message id))))
 
 (defun keybase--handle-edit (json)
-  (let ((old-message-pos (keybase--find-message-in-log (keybase--json-find json '(target_msg_id)))))
+  (let* ((old-msgid (keybase--json-find json '(content edit messageID)))
+         (old-message-pos (keybase--find-message-in-log old-msgid)))
     ;; If the message isn't already displayed, we don't need to do
     ;; anything (we don't want old messages added just because someone
     ;; edited them)
@@ -221,33 +226,29 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
             (error "no timestamp for previous message"))
           (keybase--delete-message-by-pos old-message-pos)
           ;; An UPDATE message contains the same fields as a TEXT message.
-          (let ((id (keybase--json-find json '(id)))
-                (message (keybase--json-find json '(message)))
-                (sender (keybase--json-find json '(sender))))
-            (keybase--insert-message-content msg id old-timestamp sender message)))))))
+          (let ((message (keybase--json-find json '(content edit body)))
+                (sender (keybase--json-find json '(sender username))))
+            (keybase--insert-message-content msg old-msgid old-timestamp sender message)))))))
 
 (defun keybase--handle-image-message (json)
   )
 
 (cl-defun keybase--handle-incoming-chat-message (json)
-  (let* ((channel-info (list (keybase--json-find json '(conv_name))
-                             (keybase--json-find json '(channel))))
-         (buffer (keybase--find-channel-buffer channel-info)))
-    (with-current-buffer buffer
-      (let ((activity-source (keybase--json-find json '(activity_source))))
-        ;; For now, just ignore all local activity sources
-        (when (equal activity-source "LOCAL")
-          (return-from keybase--handle-incoming-chat-message nil))
-        ;; Dispatch on the message type
-        (let ((type (keybase--json-find json '(type))))
-          (cond ((equal type "TEXT")
-                 (keybase--handle-post-message json))
-                ((equal type "DELETE")
-                 (keybase--handle-delete json))
-                ((equal type "EDIT")
-                 (keybase--handle-edit json))
-                ((equal type "ATTACHMENT")
-                 (keybase--handle-image-message json))))))))
+  (let ((msg (keybase--json-find json '(msg msg) :error-if-missing nil)))
+    (when msg
+      (let* ((channel-info (keybase--parse-channel-name (keybase--json-find msg '(channel))))
+             (buffer (keybase--find-channel-buffer channel-info :if-missing :ignore)))
+        (when buffer
+          (with-current-buffer buffer
+            (let ((type (keybase--json-find msg '(content type))))
+              (cond ((equal type "text")
+                     (keybase--handle-post-message msg))
+                    ((equal type "delete")
+                     (keybase--handle-delete msg))
+                    ((equal type "edit")
+                     (keybase--handle-edit msg))
+                    ((equal type "attachment")
+                     (keybase--handle-image-message msg))))))))))
 
 (defun keybase--request-api (arg)
   (let ((output-buf (generate-new-buffer " *keybase api*")))
@@ -262,16 +263,21 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
       (kill-buffer output-buf))))
 
 (defun keybase--channel-info-as-json (channel-info)
-  `((name . ,(first channel-info))
-    (topic_name . ,(second channel-info))
-    (members_type . "team")))
+  (append (if (first channel-info) `((members_type . ,(first channel-info))) nil)
+          (if (third channel-info) `((topic_name . ,(third channel-info))) nil)
+          `((name . ,(second channel-info))
+            (topic_type . "chat"))))
+
+(defun keybase--parse-channel-name (json)
+  (let ((members-type (keybase--json-find json '(members_type) :error-if-missing nil))
+        (name         (keybase--json-find json '(name)))
+        (topic-name   (keybase--json-find json '(topic_name)   :error-if-missing nil)))
+    (list members-type name topic-name)))
 
 (defun keybase--list-channels ()
   (let ((result (keybase--request-api '((method . "list")))))
     (loop for conversation across (keybase--json-find result '(result conversations))
-          collect (list (keybase--json-find conversation '(id))
-                        (keybase--json-find conversation '(channel name))
-                        (keybase--json-find conversation '(channel topic_name))))))
+          collect (keybase--parse-channel-name (keybase--json-find conversation '(channel))))))
 
 (defun keybase--input (str)
   (unless keybase--channel-info
@@ -355,7 +361,10 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (let ((channels (keybase--list-channels)))
     (destructuring-bind (names-list names-ref)
         (loop for channel in channels
-              for name = (format "%s/%s" (second channel) (third channel))
+              for topic-name = (third channel)
+              for name = (if topic-name
+                             (format "%s/%s" (second channel) (third channel))
+                           (second channel))
               collect name into names-list
               collect (list name channel) into id-list
               finally (return (list names-list id-list)))
@@ -365,11 +374,11 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
         (let ((found (cl-find result names-ref :key #'first :test #'equal)))
           (unless found
             (error "Selected channel did not match one of available names"))
-          (cdr (second found)))))))
+          (second found))))))
 
 (defun keybase-join-channel (channel-info)
   (interactive (list (keybase--choose-channel-info)))
-  (let ((buf (keybase--find-channel-buffer channel-info :create-if-missing t)))
+  (let ((buf (keybase--find-channel-buffer channel-info :if-missing :create)))
     (switch-to-buffer buf)))
 
 (provide 'keybase)
