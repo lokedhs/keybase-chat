@@ -106,11 +106,16 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase--buffer-closed ()
   (setq *keybase--active-buffers* (cl-remove (current-buffer) *keybase--active-buffers* :key #'cdr :test #'eq)))
 
+(defun keybase--generate-channel-name (channel-info)
+  (if (third channel-info)
+      (format "*keybase %s - %s*" (second channel-info) (third channel-info))
+    (format "*keybase %s*" (second channel-info))))
+
 (defun keybase--create-buffer (channel-info)
   ;; First ensure that the listener is running
   (keybase--find-process-buffer)
   ;; Create the buffer
-  (let ((buffer (generate-new-buffer (format "*keybase %s - %s*" (first channel-info) (second channel-info)))))
+  (let ((buffer (generate-new-buffer (keybase--generate-channel-name channel-info))))
     (with-current-buffer buffer
       (keybase-channel-mode)
       (setq-local keybase--channel-info channel-info)
@@ -143,13 +148,13 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
           for content = (keybase--json-find msg '(content))
           for type = (keybase--json-find content '(type))
           when (equal type "text")
-          do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body))))))
+          do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body)) nil))))
 
 (defun keybase--format-date (timestamp)
   (let ((time (seconds-to-time timestamp)))
     (format-time-string "%Y-%m-%d %H:%M:%S" time)))
 
-(defun keybase--insert-message-content (pos id timestamp sender message)
+(defun keybase--insert-message-content (pos id timestamp sender message image)
   (goto-char pos)
   (let ((inhibit-read-only t))
     (let ((start (point)))
@@ -157,6 +162,11 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
                           'face 'keybase-message-from))
       (when (> (length message) 0)
         (insert (concat message "\n\n")))
+      (when image
+        (destructuring-bind (image-title image-filename)
+            image
+          (keybase--insert-image image-title image-filename)
+          (insert "\n\n")))
       (add-text-properties start (point)
                            (list 'read-only t
                                  'keybase-message-id id
@@ -164,7 +174,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
                                  'keybase-sender sender
                                  'front-sticky '(read-only))))))
 
-(defun keybase--insert-message (id timestamp sender message)
+(defun keybase--insert-message (id timestamp sender message image)
   (save-excursion
     (goto-char keybase--output-marker)
     (let ((new-pos (loop with prev-pos = (point)
@@ -174,7 +184,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
                          do (setq prev-pos pos)
                          until (= pos (point-min))
                          finally (return prev-pos))))
-      (keybase--insert-message-content new-pos id timestamp sender message))))
+      (keybase--insert-message-content new-pos id timestamp sender message image))))
 
 (defun keybase--find-message-in-log (id)
   (loop with curr = (point-min)
@@ -190,11 +200,11 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (get-char-property pos 'keybase-message-id))
 
 (defun keybase--handle-post-message (json)
-  (let ((id (keybase--json-find json '(id)))
-        (message (keybase--json-find json '(content text body)))
-        (sender (keybase--json-find json '(sender username)))
+  (let ((id        (keybase--json-find json '(id)))
+        (message   (keybase--json-find json '(content text body)))
+        (sender    (keybase--json-find json '(sender username)))
         (timestamp (keybase--json-find json '(sent_at))))
-    (keybase--insert-message id timestamp sender message)))
+    (keybase--insert-message id timestamp sender message nil)))
 
 (defun keybase--delete-message-by-pos (pos)
   (destructuring-bind (start end)
@@ -228,10 +238,46 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
           ;; An UPDATE message contains the same fields as a TEXT message.
           (let ((message (keybase--json-find json '(content edit body)))
                 (sender (keybase--json-find json '(sender username))))
-            (keybase--insert-message-content msg old-msgid old-timestamp sender message)))))))
+            (keybase--insert-message-content msg old-msgid old-timestamp sender message nil)))))))
+
+(defvar *keybase--attachment-type-none* 0)
+(defvar *keybase--attachment-type-image* 1)
+(defvar *keybase--attachment-type-video* 2)
+(defvar *keybase--attachment-type-audio* 3)
+
+(defun keybase--file-to-extension (file)
+  "Returns the extension for the given FILE, or null if the file does not have an extension."
+  (let ((result (string-match "^.*\\.\\([^.]+\\)$" file)))
+    (if result
+        (match-string 1 file)
+      nil)))
+
+(defun keybase--insert-image (title filename)
+  (let ((image-data (with-temp-buffer
+                      (insert-file-contents-literally filename)
+                      (decode-coding-string (buffer-string) 'no-conversion))))
+    (let ((image (create-image image-data nil t)))
+      (insert-image image "[image]"))))
 
 (defun keybase--handle-image-message (json)
-  )
+  (let* ((id         (keybase--json-find json '(id)))
+         (sender     (keybase--json-find json '(sender username)))
+         (timestamp  (keybase--json-find json '(sent_at)))
+         (attachment (keybase--json-find json '(content attachment)))
+         (asset-type (keybase--json-find attachment '(object metadata assetType))))
+    (when (eql asset-type *keybase--attachment-type-image*)
+      (let* ((filename     (keybase--json-find attachment '(object filename)))
+             (content-type (keybase--json-find attachment '(object mimeType)))
+             (title        (keybase--json-find attachment '(object title)))
+             (file (make-temp-file "emacs-keybase" nil (format ".%s" (keybase--file-to-extension filename)))))
+        (unwind-protect
+            (progn
+              (keybase--request-api `((method . "download")
+                                      (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                             (message_id . ,id)
+                                                             (output . ,file)))))))
+              (keybase--insert-message id timestamp sender "Uploaded file" (list title file)))
+          (delete-file file))))))
 
 (cl-defun keybase--handle-incoming-chat-message (json)
   (let ((msg (keybase--json-find json '(msg) :error-if-missing nil)))
@@ -256,7 +302,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
         (progn
           (with-temp-buffer
             (insert (json-serialize arg))
-            (call-process-region (point-min) (point-max) "keybase" nil output-buf nil "chat" "api"))
+            (call-process-region (point-min) (point-max) "keybase" nil (list output-buf nil) nil "chat" "api"))
           (with-current-buffer output-buf
             (goto-char (point-min))
             (json-parse-buffer :object-type 'alist)))
