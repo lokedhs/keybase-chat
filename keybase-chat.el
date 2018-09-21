@@ -111,6 +111,16 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
       (format "*keybase %s - %s*" (second channel-info) (third channel-info))
     (format "*keybase %s*" (second channel-info))))
 
+(defun keybase--window-config-updated ()
+  "Hook function that is locally installed for window-configuration-change-hook in all channel buffers."
+  (let ((recompute nil))
+    (when (get-buffer-window)
+      ;; Clear unread count
+      (when (plusp keybase--unread-in-channel)
+        (setq recompute t)))
+    (when recompute
+      (keybase--recompute-modeline))))
+
 (defun keybase--create-buffer (channel-info)
   ;; First ensure that the listener is running
   (keybase--find-process-buffer)
@@ -119,10 +129,16 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
     (with-current-buffer buffer
       (keybase-channel-mode)
       (setq-local keybase--channel-info channel-info)
+      (setq-local keybase--unread-in-channel 0)
       (add-hook 'kill-buffer-hook 'keybase--buffer-closed nil t)
       (push (cons channel-info buffer) *keybase--active-buffers*)
-      (keybase--load-initial-messages)
-      buffer)))
+      (keybase--load-initial-messages))
+    (unless (member 'keybase-display-notifications-string global-mode-string)
+      (if global-mode-string
+          (setq global-mode-string (append global-mode-string '(keybase-display-notifications-string)))
+        (setq global-mode-string '("" keybase-display-notifications-string)))
+      (keybase--recompute-modeline))
+    buffer))
 
 (cl-defun keybase--find-channel-buffer (channel-info &key (if-missing :error))
   (unless (member if-missing '(:error :create :ignore))
@@ -153,6 +169,28 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase--format-date (timestamp)
   (let ((time (seconds-to-time timestamp)))
     (format-time-string "%Y-%m-%d %H:%M:%S" time)))
+
+(defun keybase--recompute-modeline ()
+  (setq keybase-display-notifications-string (keybase--make-unread-notification-string))
+  (force-mode-line-update t))
+
+(defun keybase--make-unread-notification-string ()
+  (with-output-to-string
+    (princ "Unread: ")
+    (let ((unread-channels (loop with first = t
+                                 for channel in *keybase--active-buffers*
+                                 for (name unread) = (with-current-buffer (cdr channel)
+                                                       (list keybase--channel-info keybase--unread-in-channel))
+                                 when (plusp unread)
+                                 collect name)))
+      (if unread-channels
+          (loop for first = t then nil
+                for name in unread-channels
+                unless first
+                do (princ ", ")
+                do (princ (keybase--generate-channel-name name)))
+        ;; ELSE: Just return the empty string
+        ""))))
 
 (defun keybase--insert-message-content (pos id timestamp sender message image)
   (goto-char pos)
@@ -204,7 +242,11 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
         (message   (keybase--json-find json '(content text body)))
         (sender    (keybase--json-find json '(sender username)))
         (timestamp (keybase--json-find json '(sent_at))))
-    (keybase--insert-message id timestamp sender message nil)))
+    (keybase--insert-message id timestamp sender message nil)
+    (let ((old keybase--unread-in-channel))
+      (incf keybase--unread-in-channel)
+      (when (zerop old)
+        (keybase--recompute-modeline)))))
 
 (defun keybase--delete-message-by-pos (pos)
   (destructuring-bind (start end)
