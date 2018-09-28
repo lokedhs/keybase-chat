@@ -9,6 +9,11 @@
   :prefix 'keybase
   :group 'applications)
 
+(defcustom keybase--program "keybase"
+  "The name of the keybase binary"
+  :type 'string
+  :group 'keybase)
+
 (defface keybase-default
   ()
   "Default face for chat buffers."
@@ -34,8 +39,16 @@
           do (setq curr (cdr node))
           finally (return curr))))
 
-(defvar *keybase--proc-buf* nil)
-(defvar *keybase--active-buffers* nil
+(cl-defmacro keybase--with-json-bind ((&rest defs) json &body body)
+  (declare (indent 2))
+  (let ((json-sym (gensym "json")))
+    `(let ((,json-sym ,json))
+       (let ,(loop for (sym path) in defs
+                   collect `(,sym (keybase--json-find ,json-sym ',path)))
+         ,@body))))
+
+(defvar keybase--proc-buf nil)
+(defvar keybase--active-buffers nil
   "List of active channels.
 Each entry is of the form (CHANNEL-INFO BUFFER)")
 
@@ -97,14 +110,14 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (let ((msgid (keybase--find-message-at-point (point))))
     (if msgid
         (when (yes-or-no-p "Really delete message? ")
-          (keybase--request-api `((method . "delete")
-                                  (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                         (message_id . ,msgid))))))))
+          (keybase--request-chat-api `((method . "delete")
+                                       (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                              (message_id . ,msgid))))))))
       ;; ELSE: No message at point
       (message "No message at point"))))
 
 (defun keybase--buffer-closed ()
-  (setq *keybase--active-buffers* (cl-remove (current-buffer) *keybase--active-buffers* :key #'cdr :test #'eq)))
+  (setq keybase--active-buffers (cl-remove (current-buffer) keybase--active-buffers :key #'cdr :test #'eq)))
 
 (defun keybase--generate-channel-name (channel-info)
   (if (third channel-info)
@@ -131,7 +144,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
       (setq-local keybase--channel-info channel-info)
       (setq-local keybase--unread-in-channel 0)
       (add-hook 'kill-buffer-hook 'keybase--buffer-closed nil t)
-      (push (cons channel-info buffer) *keybase--active-buffers*)
+      (push (cons channel-info buffer) keybase--active-buffers)
       (keybase--load-initial-messages))
     (unless (member 'keybase-display-notifications-string global-mode-string)
       (if global-mode-string
@@ -143,7 +156,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (cl-defun keybase--find-channel-buffer (channel-info &key (if-missing :error))
   (unless (member if-missing '(:error :create :ignore))
     (error "Illegal argument to if-missing: %S" if-missing))
-  (let ((e (find channel-info *keybase--active-buffers* :key #'car :test #'equal)))
+  (let ((e (find channel-info keybase--active-buffers :key #'car :test #'equal)))
     (cond (e
            (cdr e))
           ((eq if-missing :create)
@@ -152,7 +165,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
            (error "No buffer for channel %S" channel-info)))))
 
 (defun keybase--load-initial-messages ()
-  (let* ((messages-json (keybase--request-api `((method . "read")
+  (let* ((messages-json (keybase--request-chat-api `((method . "read")
                                                 (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
                                                                        (pagination . ((num . 10))))))))))
          (messages (keybase--json-find messages-json '(result messages))))
@@ -178,7 +191,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (with-output-to-string
     (princ "Unread: ")
     (let ((unread-channels (loop with first = t
-                                 for channel in *keybase--active-buffers*
+                                 for channel in keybase--active-buffers
                                  for (name unread) = (with-current-buffer (cdr channel)
                                                        (list keybase--channel-info keybase--unread-in-channel))
                                  when (plusp unread)
@@ -314,10 +327,10 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
              (file (make-temp-file "emacs-keybase" nil (format ".%s" (keybase--file-to-extension filename)))))
         (unwind-protect
             (progn
-              (keybase--request-api `((method . "download")
-                                      (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                             (message_id . ,id)
-                                                             (output . ,file)))))))
+              (keybase--request-chat-api `((method . "download")
+                                           (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                                  (message_id . ,id)
+                                                                  (output . ,file)))))))
               (keybase--insert-message id timestamp sender "Uploaded file" (list title file)))
           (delete-file file))))))
 
@@ -336,19 +349,31 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
                     ((equal type "edit")
                      (keybase--handle-edit msg))
                     ((equal type "attachment")
-                     (keybase--handle-image-message msg))))))))))
+                     (keybase--handle-image-message msg))))))
+        ;; We need to check mentions for all channels, not just the ones the user have opened
+        (let ((at-mention-usernames (keybase--json-find msg '(at_mention_usernames) :error-if-missing nil))
+              (username (with-current-buffer keybase--proc-buf keybase--username)))
+          (when (loop for v across at-mention-usernames
+                      when (equal v username)
+                      return t)
+            (message "mention in channel: %S" channel-info)))))))
 
-(defun keybase--request-api (arg)
+(defun keybase--request-api (command command-args arg)
   (let ((output-buf (generate-new-buffer " *keybase api*")))
     (unwind-protect
         (progn
-          (with-temp-buffer
-            (insert (json-serialize arg))
-            (call-process-region (point-min) (point-max) "keybase" nil (list output-buf nil) nil "chat" "api"))
+          (if arg
+              (with-temp-buffer
+                (insert (json-serialize arg))
+                (apply #'call-process-region (point-min) (point-max) command nil (list output-buf nil) nil command-args))
+            (apply #'call-process command nil (list output-buf nil) nil command-args))
           (with-current-buffer output-buf
             (goto-char (point-min))
             (json-parse-buffer :object-type 'alist)))
       (kill-buffer output-buf))))
+
+(defun keybase--request-chat-api (arg)
+  (keybase--request-api keybase--program '("chat" "api") arg))
 
 (defun keybase--channel-info-as-json (channel-info)
   (append (if (first channel-info) `((members_type . ,(first channel-info))) nil)
@@ -363,14 +388,14 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
     (list members-type name topic-name)))
 
 (defun keybase--list-channels ()
-  (let ((result (keybase--request-api '((method . "list")))))
+  (let ((result (keybase--request-chat-api '((method . "list")))))
     (loop for conversation across (keybase--json-find result '(result conversations))
           collect (keybase--parse-channel-name (keybase--json-find conversation '(channel))))))
 
 (defun keybase--input (str)
   (unless keybase--channel-info
     (error "No channel info available in this buffer"))
-  (keybase--request-api `((method . "send")
+  (keybase--request-chat-api `((method . "send")
                           (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
                                                  (message . ((body . ,str))))))))))
 
@@ -407,32 +432,34 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase--connect-to-server ()
   (let ((name "*keybase server*"))
     ;; Ensure that there is no buffer with this name already
-   (when (get-buffer name)
-     (error "keybase server buffer already exists"))
-   (let ((buf (get-buffer-create name)))
-     (let ((proc (make-process :name "keybase server"
-                               :buffer buf
-                               :command '("keybase" "chat" "api-listen")
-                               :coding 'utf-8
-                               :filter 'keybase--filter-command)))
-       (with-current-buffer buf
-         (setq-local *keybase--server-process* proc)
-         (setq-local *keybase--channels* nil))
-       (setq *keybase--proc-buf* buf)
-       buf))))
+    (when (get-buffer name)
+      (error "keybase server buffer already exists"))
+    (let ((buf (get-buffer-create name)))
+      (let ((proc (make-process :name "keybase server"
+                                :buffer buf
+                                :command '("keybase" "chat" "api-listen")
+                                :coding 'utf-8
+                                :filter 'keybase--filter-command)))
+        (with-current-buffer buf
+          (let ((json (keybase--request-api keybase--program '("status" "--json") nil)))
+            (setq-local keybase--server-process proc)
+            (setq-local keybase--channels nil)
+            (setq-local keybase--username (keybase--json-find json '(Username)))))
+        (setq keybase--proc-buf buf)
+        buf))))
 
 (defun keybase--find-active-process-buffer ()
-  (when *keybase--proc-buf*
-    (if (buffer-live-p *keybase--proc-buf*)
-        (with-current-buffer *keybase--proc-buf*
-          (if (process-live-p *keybase--server-process*)
-              *keybase--proc-buf*
+  (when keybase--proc-buf
+    (if (buffer-live-p keybase--proc-buf)
+        (with-current-buffer keybase--proc-buf
+          (if (process-live-p keybase--server-process)
+              keybase--proc-buf
             (progn
-              (kill-buffer *keybase--proc-buf*)
-              (setq *keybase--proc-buf* nil)
+              (kill-buffer keybase--proc-buf)
+              (setq keybase--proc-buf nil)
               nil)))
       (progn
-        (setq *keybase--proc-buf* nil)
+        (setq keybase--proc-buf nil)
         nil))))
 
 (defun keybase--find-process-buffer ()
@@ -443,7 +470,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (let ((buf (keybase--find-active-process-buffer)))
     (when buf
       (kill-buffer buf)
-      (setq *keybase--proc-buf* nil))))
+      (setq keybase--proc-buf nil))))
 
 (defun keybase--choose-channel-info ()
   (let ((channels (keybase--list-channels)))
@@ -468,5 +495,49 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (interactive (list (keybase--choose-channel-info)))
   (let ((buf (keybase--find-channel-buffer channel-info :if-missing :create)))
     (switch-to-buffer buf)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Channel summary
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defvar keybase-conversations-list-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "g") 'keybase-conversations-refresh)
+    map))
+
+(define-derived-mode keybase-conversations-list-mode fundamental-mode "Keybase conversations"
+  "Major mode for displaying the keymap help."
+  (use-local-map keybase-conversations-list-mode-map)
+  (read-only-mode 1)
+  (setq truncate-lines t)
+  (keybase-conversations-refresh))
+
+(defun keybase-conversations-refresh ()
+  (interactive)
+  (unless (eq major-mode 'keybase-conversations-list-mode)
+    (error "Buffer is not a keybase-conversations-list"))
+  (error "conversion loading is current broken")
+  (let ((json (keybase--request-chat-api '((method . "list")))))
+    (let ((inhibit-read-only t))
+      (delete-region (point-min) (point-max))
+      (let ((conversations (keybase--json-find json '(result conversations)))
+            (team-list nil)
+            (private-list nil))        
+        (loop for conversation across conversations
+              for channel = (keybase--json-find conversation '(channel))
+              for members-type = (keybase--json-find channel '(members_type))
+              when (equal members-type "team")
+              do (error "need to push the channel name here"))))))
+
+(defun keybase-list-conversations ()
+  (interactive)
+  (let ((buffer (get-buffer "*keybase conversations*")))
+    (when (and buffer (not (eq (with-current-buffer buffer major-mode) 'keybase-coversations-list-mode)))
+      (error "Conversation lists buffer already exists but has the wrong mode"))
+    (unless buffer
+      (setq buffer (get-buffer-create "*keybase conversations*")))
+    (with-current-buffer buffer
+      (keybase-conversations-list-mode))
+    (pop-to-buffer buffer)))
 
 (provide 'keybase)
