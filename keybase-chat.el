@@ -81,6 +81,29 @@
          ,val-sym))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Channel tools
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defvar keybase-channel-link-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-2] 'keybase-open-selected-channel)
+    (define-key map (kbd "RET") 'keybase-open-selected-channel)
+    map))
+
+(defun keybase--make-channel-button (name channel)
+  (propertize name
+              'font-lock-face 'link
+              'mouse-face 'highlight
+              'help-echo (format "mouse-2: open channel buffer")
+              'keybase-channel-name channel
+              'keymap keybase-channel-link-keymap))
+
+(defun keybase-open-selected-channel ()
+  (interactive)
+  (when-let ((channel (get-char-property (point) 'keybase-channel-name)))
+    (keybase-join-channel channel)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Channel mode
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -577,7 +600,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
                  (loop for (channel unread) in (sort channel-list (lambda (a b) (string< (third (car a)) (third (car b)))))
                        do (progn
                             (insert "    ")
-                            (insert (third channel))
+                            (insert (keybase--make-channel-button (third channel) channel))
                             (when unread
                               (insert " (unread)"))
                             (insert "\n"))))))))
