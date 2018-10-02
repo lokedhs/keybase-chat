@@ -28,6 +28,24 @@
   "Face used to display the 'from' part of a message."
   :group 'keybase)
 
+(defface keybase-channel-summary-title
+  '((t
+     :weight bold
+     :inherit keybase-default))
+  "Face used to display the headlines in the channel list."
+  :group 'keybase)
+
+(defface keybase-channel-summary-team
+  '((t
+     :weight bold
+     :inherit keybase-default))
+  "Face used to display the team name in the channel list"
+  :group 'keybase)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Utilities
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (cl-defun keybase--json-find (obj path &key (error-if-missing t))
   (let ((curr obj))
     (loop for path-entry in path
@@ -46,6 +64,25 @@
        (let ,(loop for (sym path) in defs
                    collect `(,sym (keybase--json-find ,json-sym ',path)))
          ,@body))))
+
+(cl-defmacro keybase--ensure-hash-value (key hash &body body)
+  (let ((hash-sym (gensym))
+        (key-sym (gensym))
+        (val-sym (gensym))
+        (default-value-sym (gensym)))
+    `(let* ((,hash-sym ,hash)
+            (,key-sym ,key)
+            (,val-sym (gethash ,key-sym ,hash-sym ',default-value-sym)))
+       (if (eq ,val-sym ',default-value-sym)
+           (let ((,val-sym (progn ,@body)))
+             (setf (gethash ,key-sym ,hash-sym) ,val-sym)
+             ,val-sym)
+         ;; ELSE: The value was found in the hash table
+         ,val-sym))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Channel mode
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defvar keybase--proc-buf nil)
 (defvar keybase--active-buffers nil
@@ -390,14 +427,16 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase--list-channels ()
   (let ((result (keybase--request-chat-api '((method . "list")))))
     (loop for conversation across (keybase--json-find result '(result conversations))
-          collect (keybase--parse-channel-name (keybase--json-find conversation '(channel))))))
+          for channel-name = (keybase--parse-channel-name (keybase--json-find conversation '(channel)))
+          for unread = (not (eq (keybase--json-find conversation '(unread)) :false))
+          collect (list channel-name unread))))
 
 (defun keybase--input (str)
   (unless keybase--channel-info
     (error "No channel info available in this buffer"))
   (keybase--request-chat-api `((method . "send")
-                          (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                 (message . ((body . ,str))))))))))
+                               (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                      (message . ((body . ,str))))))))))
 
 (defun keybase-send-input-line ()
   "Send the currently typed line to the server."
@@ -475,7 +514,8 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase--choose-channel-info ()
   (let ((channels (keybase--list-channels)))
     (destructuring-bind (names-list names-ref)
-        (loop for channel in channels
+        (loop for e in channels
+              for channel = (first e)
               for topic-name = (third channel)
               for name = (if topic-name
                              (format "%s/%s" (second channel) (third channel))
@@ -509,35 +549,71 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   "Major mode for displaying the keymap help."
   (use-local-map keybase-conversations-list-mode-map)
   (read-only-mode 1)
-  (setq truncate-lines t)
-  (keybase-conversations-refresh))
+  (setq truncate-lines t))
+
+(defun keybase--sort-team-list (channels)
+  (let ((team-list (make-hash-table :test 'equal)))
+    (loop for channel in channels
+          for channel-name = (first channel)
+          when (equal (first channel-name) "team")
+          do (let* ((team-name (second channel-name))
+                    (name (third channel-name))
+                    (v (gethash team-name team-list :unset)))
+               (if (eq v :unset)
+                   (setf (gethash team-name team-list) (list channel))
+                 (setf (gethash team-name team-list) (cons channel v)))))
+    team-list))
+
+(defun keybase--render-team-list (channels)
+  (let ((team-list (keybase--sort-team-list channels)))
+    (insert (propertize "Teams\n" 'face 'keybase-channel-summary-title))
+    (let ((team-names (sort (loop for name being each hash-key in team-list collect name) #'string<)))
+      (loop for name in team-names
+            for channel-list = (gethash name team-list)
+            do (progn
+                 (insert "\n  ")
+                 (insert (propertize name 'face 'keybase-channel-summary-team))
+                 (insert "\n")
+                 (loop for (channel unread) in (sort channel-list (lambda (a b) (string< (third (car a)) (third (car b)))))
+                       do (progn
+                            (insert "    ")
+                            (insert (third channel))
+                            (when unread
+                              (insert " (unread)"))
+                            (insert "\n"))))))))
+
+(defun keybase--render-private-list (channels)
+  (insert "\n")
+  (insert (propertize "Private conversations\n\n" 'face 'keybase-channel-summary-title))
+  (loop for (channel-name unread) in channels
+        when (equal (first channel-name) "impteamnative")
+        do (progn
+             (insert (second channel-name))
+             (insert "\n"))))
 
 (defun keybase-conversations-refresh ()
   (interactive)
   (unless (eq major-mode 'keybase-conversations-list-mode)
     (error "Buffer is not a keybase-conversations-list"))
-  (error "conversion loading is current broken")
   (let ((json (keybase--request-chat-api '((method . "list")))))
     (let ((inhibit-read-only t))
       (delete-region (point-min) (point-max))
-      (let ((conversations (keybase--json-find json '(result conversations)))
-            (team-list nil)
-            (private-list nil))        
-        (loop for conversation across conversations
-              for channel = (keybase--json-find conversation '(channel))
-              for members-type = (keybase--json-find channel '(members_type))
-              when (equal members-type "team")
-              do (error "need to push the channel name here"))))))
+      (let ((channels (keybase--list-channels))
+            (team-list (make-hash-table :test 'equal))
+            (private-list (make-hash-table :test 'equal)))
+        (keybase--render-team-list channels)
+        (keybase--render-private-list channels)))))
 
 (defun keybase-list-conversations ()
   (interactive)
   (let ((buffer (get-buffer "*keybase conversations*")))
-    (when (and buffer (not (eq (with-current-buffer buffer major-mode) 'keybase-coversations-list-mode)))
+    (when (and buffer (not (eq (with-current-buffer buffer major-mode) 'keybase-conversations-list-mode)))
       (error "Conversation lists buffer already exists but has the wrong mode"))
     (unless buffer
       (setq buffer (get-buffer-create "*keybase conversations*")))
     (with-current-buffer buffer
-      (keybase-conversations-list-mode))
+      (keybase-conversations-list-mode)
+      (keybase-conversations-refresh))
     (pop-to-buffer buffer)))
 
 (provide 'keybase)
