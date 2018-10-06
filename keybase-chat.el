@@ -22,6 +22,11 @@ the epoch and the sender's keybase name."
   :type 'function
   :group 'keybase)
 
+(defcustom keybase-channel-mode-hook nil
+  "Hook called by `keybase-channel-mode'"
+  :type 'hook
+  :group 'keybase)
+
 (defface keybase-default
   ()
   "Default face for chat buffers."
