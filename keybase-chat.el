@@ -433,6 +433,29 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
             (json-read)))
       (kill-buffer output-buf))))
 
+(defun keybase--request-api-async (command command-args arg callback)
+  (let ((output-buf (generate-new-buffer " *keybase api*")))
+    (let ((proc (make-process :name "keybase-api"
+                              :command (cons command command-args)
+                              :buffer output-buf
+                              :stderr " *keybase api error*"
+                              :coding 'utf-8
+                              :sentinel (lambda (proc type)
+                                          (message "process update: %S" type)
+                                          (when (string-match "^\\(finished\\|deleted\\|exited\\|failed\\)" type)
+                                            (unwind-protect
+                                                (when (string-match "^finished" type)
+                                                  (with-current-buffer output-buf
+                                                    (goto-char (point-min))
+                                                    (let ((result (json-read)))
+                                                      (funcall callback result))))
+                                              (kill-buffer output-buf)))))))
+      (let ((encoded (json-encode arg)))
+        (message "Sending to proc: %S" encoded)
+        (process-send-string proc encoded))
+      (message "Sending EOF")
+      (process-send-eof proc))))
+
 (defun keybase--request-chat-api (arg)
   (keybase--request-api keybase--program '("chat" "api") arg))
 
@@ -622,14 +645,17 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
   (interactive)
   (unless (eq major-mode 'keybase-conversations-list-mode)
     (error "Buffer is not a keybase-conversations-list"))
-  (let ((json (keybase--request-chat-api '((method . "list")))))
-    (let ((inhibit-read-only t))
-      (delete-region (point-min) (point-max))
-      (let ((channels (keybase--list-channels))
-            (team-list (make-hash-table :test 'equal))
-            (private-list (make-hash-table :test 'equal)))
-        (keybase--render-team-list channels)
-        (keybase--render-private-list channels)))))
+  (let ((buffer (current-buffer)))
+    (keybase--request-api-async keybase--program '("chat" "api") '((method . "list"))
+                                (lambda (json)
+                                  (with-current-buffer buffer
+                                    (let ((inhibit-read-only t))
+                                      (delete-region (point-min) (point-max))
+                                      (let ((channels (keybase--list-channels))
+                                            (team-list (make-hash-table :test 'equal))
+                                            (private-list (make-hash-table :test 'equal)))
+                                        (keybase--render-team-list channels)
+                                        (keybase--render-private-list channels))))))))
 
 (defun keybase-list-conversations ()
   (interactive)
