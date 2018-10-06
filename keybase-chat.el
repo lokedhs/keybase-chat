@@ -488,8 +488,11 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
             for nl = (search-forward-regexp "\n" nil t)
             while nl
             do (let ((content (buffer-substring pos nl)))
-                 (keybase--handle-incoming-chat-message (json-read-from-string content))
-                 (setq pos nl)))
+		 (condition-case err
+		     (progn
+		       (keybase--handle-incoming-chat-message (json-read-from-string content))
+		       (setq pos nl))
+		   (json-readtable-error (message "ate bad json") (setq pos nl)))))
       (delete-region (point-min) (point)))))
 
 (defun keybase--connect-to-server ()
