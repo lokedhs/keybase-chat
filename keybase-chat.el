@@ -3,6 +3,7 @@
 (require 'url)
 (require 'subr-x)
 (require 'notifications)
+(require 'cl)
 
 (defgroup keybase nil
   "Keybase chat implementation"
@@ -424,12 +425,12 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
         (progn
           (if arg
               (with-temp-buffer
-                (insert (json-serialize arg))
+                (insert (json-encode arg))
                 (apply #'call-process-region (point-min) (point-max) command nil (list output-buf nil) nil command-args))
             (apply #'call-process command nil (list output-buf nil) nil command-args))
           (with-current-buffer output-buf
             (goto-char (point-min))
-            (json-parse-buffer :object-type 'alist)))
+            (json-read)))
       (kill-buffer output-buf))))
 
 (defun keybase--request-chat-api (arg)
@@ -487,8 +488,11 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
             for nl = (search-forward-regexp "\n" nil t)
             while nl
             do (let ((content (buffer-substring pos nl)))
-                 (keybase--handle-incoming-chat-message (json-read-from-string content))
-                 (setq pos nl)))
+		 (condition-case err
+		     (progn
+		       (keybase--handle-incoming-chat-message (json-read-from-string content))
+		       (setq pos nl))
+		   (json-readtable-error (message "ate bad json") (setq pos nl)))))
       (delete-region (point-min) (point)))))
 
 (defun keybase--connect-to-server ()
