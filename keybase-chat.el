@@ -452,9 +452,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
                                               (kill-buffer output-buf)))))))
       (when arg
         (let ((encoded (json-encode arg)))
-          (message "Sending to proc: %S" encoded)
           (process-send-string proc encoded))
-        (message "Sending EOF")
         (process-send-eof proc)))))
 
 (defun keybase--request-chat-api (arg)
