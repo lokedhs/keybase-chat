@@ -15,6 +15,18 @@
   :type 'string
   :group 'keybase)
 
+(defcustom keybase-attribution 'keybase-default-attribution
+  "A function that prints the attribution before each Keybase message.
+It will be given two arguments, the timestamp of the message in seconds since
+the epoch and the sender's keybase name."
+  :type 'function
+  :group 'keybase)
+
+(defcustom keybase-channel-mode-hook nil
+  "Hook called by `keybase-channel-mode'"
+  :type 'hook
+  :group 'keybase)
+
 (defface keybase-default
   ()
   "Default face for chat buffers."
@@ -266,11 +278,14 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
         ;; ELSE: Just return the empty string
         ""))))
 
+(defun keybase-default-attribution (sender timestamp)
+  (format "[%s] %s " sender (keybase--format-date timestamp)))
+
 (defun keybase--insert-message-content (pos id timestamp sender message image)
   (goto-char pos)
   (let ((inhibit-read-only t))
     (let ((start (point)))
-      (insert (propertize (format "[%s] %s\n" sender (keybase--format-date timestamp))
+      (insert (propertize (funcall keybase-attribution sender timestamp)
                           'face 'keybase-message-from))
       (when (> (length message) 0)
         (insert (concat message "\n\n")))
