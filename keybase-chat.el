@@ -32,6 +32,21 @@ the epoch and the sender's keybase name."
   "Default face for chat buffers."
   :group 'keybase)
 
+(defface keybase-message-text-content
+  '((t
+     :inherit keybase-default))
+  "Face used to display the text content of messages."
+  :group 'keybase)
+
+(defface keybase-message-text-content-in-progress
+  '((((class color))
+     :foreground "#505050"
+     :inherit keybase-default)
+    (t
+     :inherit keybase-default))
+  "Face used to display the text content of a message that has
+not been confirmed from the server yet.")
+
 (defface keybase-message-from
   '((((class color))
      :foreground "#00b000"
@@ -281,25 +296,43 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase-default-attribution (sender timestamp)
   (format "[%s] %s " sender (keybase--format-date timestamp)))
 
+(defvar keybase--current-id 0)
+
+(defun keybase--make-in-progress-id ()
+  (format "temp-%d" (incf keybase--current-id)))
+
 (defun keybase--insert-message-content (pos id timestamp sender message image)
+  "Insert message content at position POS.
+ID may be nil, in which case this message represents an
+in-progress message which is inserted while a new message is
+being inserted. It will later be replaced with the real content
+once it is received from the server."
   (goto-char pos)
   (let ((inhibit-read-only t))
     (let ((start (point)))
       (insert (propertize (funcall keybase-attribution sender timestamp)
                           'face 'keybase-message-from))
-      (when (> (length message) 0)
-        (insert (concat message "\n\n")))
-      (when image
-        (destructuring-bind (image-title image-filename)
-            image
-          (keybase--insert-image image-title image-filename)
-          (insert "\n\n")))
-      (add-text-properties start (point)
-                           (list 'read-only t
-                                 'keybase-message-id id
-                                 'keybase-timestamp timestamp
-                                 'keybase-sender sender
-                                 'front-sticky '(read-only))))))
+      (let ((text-start (point)))
+       (when (> (length message) 0)
+         (insert (concat message "\n\n")))
+       (when image
+         (destructuring-bind (image-title image-filename)
+             image
+           (keybase--insert-image image-title image-filename)
+           (insert "\n\n")))
+       (let ((gen-id (or id (keybase--make-in-progress-id))))
+         (add-text-properties start (point)
+                              (append (list 'read-only t
+                                            'keybase-message-id gen-id
+                                            'keybase-timestamp timestamp
+                                            'keybase-sender sender
+                                            'front-sticky '(read-only))
+                                      (if (null id)
+                                          (list 'keybase-in-progress gen-id
+                                                'keybase-content message)
+                                        nil)))
+         (add-text-properties text-start (point)
+                              (list 'face (if id 'keybase-message-text-content 'keybase-message-text-content-in-progress))))))))
 
 (defun keybase--insert-message (id timestamp sender message image)
   (save-excursion
@@ -331,6 +364,21 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
         (message   (keybase--json-find json '(content text body)))
         (sender    (keybase--json-find json '(sender username)))
         (timestamp (keybase--json-find json '(sent_at))))
+    ;; If this message is sent by us, we need to check if there is an
+    ;; in-progress message inserted in the buffer. If so, it beeds to
+    ;; be removed before the real one is sent.
+    (when (equal sender (with-current-buffer keybase--proc-buf keybase--username))
+      (save-excursion
+        (loop with curr = (point-min)
+              for pos = (next-single-property-change curr 'keybase-in-progress)
+              while pos
+              when (and (get-char-property pos 'keybase-in-progress)
+                        (equal (get-char-property pos 'keybase-content) message))
+              do (let ((end (next-single-property-change pos 'keybase-message-id))
+                       (inhibit-read-only t))
+                   (delete-region pos end)
+                   (return nil))
+              do (setq curr pos))))
     (keybase--insert-message id timestamp sender message nil)
     (let ((old keybase--unread-in-channel))
       (incf keybase--unread-in-channel)
@@ -456,7 +504,6 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
                               :stderr " *keybase api error*"
                               :coding 'utf-8
                               :sentinel (lambda (proc type)
-                                          (message "process update: %S" type)
                                           (when (string-match "^\\(finished\\|deleted\\|exited\\|failed\\)" type)
                                             (unwind-protect
                                                 (when (string-match "^finished" type)
@@ -495,13 +542,21 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase--input (str)
   (unless keybase--channel-info
     (error "No channel info available in this buffer"))
+  (save-excursion
+    (goto-char keybase--output-marker)
+    (keybase--insert-message-content (point)
+                                     nil
+                                     (time-to-seconds (current-time))
+                                     (with-current-buffer keybase--proc-buf keybase--username)
+                                     str
+                                     nil))
   (keybase--request-api-async keybase--program
                               (list "chat" "api")
                               `((method . "send")
                                 (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
                                                        (message . ((body . ,str))))))))
                               (lambda (json)
-                                (message "Message inserted"))))
+                                nil)))
 
 (defun keybase-send-input-line ()
   "Send the currently typed line to the server."
@@ -537,7 +592,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
       (delete-region (point-min) (point)))))
 
 (defun keybase--connect-to-server ()
-  (let ((name "*keybase server*"))
+  (let ((name " *keybase server*"))
     ;; Ensure that there is no buffer with this name already
     (when (get-buffer name)
       (error "keybase server buffer already exists"))
