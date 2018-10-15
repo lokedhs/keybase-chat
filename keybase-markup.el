@@ -157,7 +157,6 @@
       (loop while (< pos length)
             do (let ((match-start (string-match "\\(?:^\\|\\W\\)\\([*_]\\)\\(.+?\\)\\(\\1\\)\\(?:$\\|\\W\\)" string pos)))
                  (if match-start
-                     ;; We don't do maths markup right now, but once we do, is should be done here
                      (let ((scode-s (match-beginning 1))
                            (ecode-e (match-end 3))
                            (s (match-beginning 2))
