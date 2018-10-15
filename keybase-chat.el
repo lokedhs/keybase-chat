@@ -4,6 +4,7 @@
 (require 'subr-x)
 (require 'notifications)
 (require 'cl)
+(require 'keybase-markup)
 
 (defgroup keybase nil
   "Keybase chat implementation"
@@ -36,6 +37,30 @@ the epoch and the sender's keybase name."
   '((t
      :inherit keybase-default))
   "Face used to display the text content of messages."
+  :group 'keybase)
+
+(defface keybase-message-text-content-bold
+  '((t
+     :weight bold
+     :inherit keybase-default))
+  "Face used to display bold text."
+  :group 'keybase)
+
+(defface keybase-message-text-content-italics
+  '((t
+     :slant italic
+     :foreground "#00ff00"
+     :inherit keybase-default))
+  "Face used to display italics text."
+  :group 'keybase)
+
+(defface keybase-message-text-content-code
+  '((((class color))
+     :background "#f0f0f0"
+     :inherit keybase-default)
+    (t
+     :inherit keybase-default))
+  "Face used to display code snippets."
   :group 'keybase)
 
 (defface keybase-message-text-content-in-progress
@@ -296,6 +321,52 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase-default-attribution (sender timestamp)
   (format "[%s] %s " sender (keybase--format-date timestamp)))
 
+(defvar keybase--first-paragraph nil)
+
+(defun keybase--render-markup-element (element)
+  (etypecase element
+    (string (insert element))
+    (list (if (stringp (car element))
+              (insert (car element))
+            (ecase (car element)
+              (:paragraph
+               (let ((col (current-column))
+                     (wrapcol fill-column))
+                 (let ((content (with-temp-buffer
+                                  (keybase--insert-markup-inner (cdr element))
+                                  (let ((sentence-end-double-space nil)
+                                        (fill-column (- wrapcol col)))
+                                    (fill-region (point-min) (point-max))
+                                    (buffer-string)))))
+                   (loop for v in (keybase--split-with-regexp "\n" content :empty t)
+                         for first = t then nil
+                         unless first
+                         do (loop repeat col
+                                  do (insert " "))
+                         do (progn
+                              (insert v)
+                              (insert "\n"))))))
+              (:newline
+               (insert "\n"))
+              (:bold
+               (insert (propertize (cdr element) 'face 'keybase-message-text-content-bold)))
+              (:italics
+               (insert (propertize (cdr element) 'face 'keybase-message-text-content-italics)))
+              (:code
+               (insert (propertize (cdr element) 'face 'keybase-message-text-content-code)))
+              (:code-block
+               (insert "\n")
+               (insert (propertize (third element) 'face 'keybase-message-text-content-code))
+               (insert "\n")))))))
+
+(defun keybase--insert-markup-inner (content)
+  (loop for v in content
+        do (keybase--render-markup-element v)))
+
+(defun keybase--insert-markup (content)
+  (let ((keybase--first-paragraph t))
+    (keybase--insert-markup-inner content)))
+
 (defvar keybase--current-id 0)
 
 (defun keybase--make-in-progress-id ()
@@ -313,26 +384,26 @@ once it is received from the server."
       (insert (propertize (funcall keybase-attribution sender timestamp)
                           'face 'keybase-message-from))
       (let ((text-start (point)))
-       (when (> (length message) 0)
-         (insert (concat message "\n\n")))
-       (when image
-         (destructuring-bind (image-title image-filename)
-             image
-           (keybase--insert-image image-title image-filename)
-           (insert "\n\n")))
-       (let ((gen-id (or id (keybase--make-in-progress-id))))
-         (add-text-properties start (point)
-                              (append (list 'read-only t
-                                            'keybase-message-id gen-id
-                                            'keybase-timestamp timestamp
-                                            'keybase-sender sender
-                                            'front-sticky '(read-only))
-                                      (if (null id)
-                                          (list 'keybase-in-progress gen-id
-                                                'keybase-content message)
-                                        nil)))
-         (add-text-properties text-start (point)
-                              (list 'face (if id 'keybase-message-text-content 'keybase-message-text-content-in-progress))))))))
+        (when (> (length message) 0)
+          (keybase--insert-markup (keybase--markup-paragraphs message :allow-nl t))
+          (insert "\n"))
+        (when image
+          (destructuring-bind (image-title image-filename)
+              image
+            (keybase--insert-image image-title image-filename)
+            (insert "\n\n")))
+        (let ((gen-id (or id (keybase--make-in-progress-id))))
+          (add-text-properties start (point)
+                               (append (list 'read-only t
+                                             'keybase-message-id gen-id
+                                             'keybase-timestamp timestamp
+                                             'keybase-sender sender
+                                             'front-sticky '(read-only))
+                                       (if (null id)
+                                           (list 'keybase-in-progress gen-id
+                                                 'keybase-content message
+                                                 'face 'keybase-message-text-content-in-progress)
+                                         nil))))))))
 
 (defun keybase--insert-message (id timestamp sender message image)
   (save-excursion

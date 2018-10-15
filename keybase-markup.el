@@ -3,6 +3,8 @@
 (require 'cl)
 
 (defvar keybase--markup-allow-nl nil)
+(defvar keybase--custom-parser-1 nil)
+(defvar keybase--custom-parser-2 nil)
 
 (defun keybase--trim-blanks-and-newlines (s)
   (string-trim s))
@@ -14,6 +16,23 @@
        (when (plusp (length ,trimmed))
          (let ((,sym ,trimmed))
            ,@body)))))
+
+(cl-defun keybase--split-with-regexp (regexp string &key empty)
+  (loop with pos = 0
+        with length = (length string)
+        with result = nil
+        while (< pos length)
+        do (let ((match-start (string-match regexp string pos)))
+             (if match-start
+                 (let ((match-end (match-end 0)))
+                   (when (or (< pos match-start) empty)
+                     (push (subseq string pos match-start) result))
+                   (setq pos match-end))
+               ;; ELSE: No more matches, collect the last paragraph
+               (progn
+                 (push (subseq string pos length) result)
+                 (setq pos length))))
+        finally (return (reverse result))))
 
 (defun keybase--find-reg-starts-ends ()
   (loop for i from 1
@@ -79,10 +98,10 @@
                            (princ (subseq string start end) out)))))
 
 (defun keybase--markup-indent (string)
-  (markup-from-regexp "\\n?\\(\\(?:^>[^\\n]*\\)\\(?:\\n>[^\\n]*\\)*\\)\\n?" string
-                      (lambda (reg-starts reg-ends)
-                        (let ((text (keybase--strip-indentation-char (subseq string (aref reg-starts 0) (aref reg-ends 0)))))
-                          (list (cons :quote (keybase--markup-paragraphs-inner text)))))))
+  (keybase--markup-from-regexp "\\n?\\(\\(?:^>[^\\n]*\\)\\(?:\\n>[^\\n]*\\)*\\)\\n?" string
+                               (lambda (reg-starts reg-ends)
+                                 (let ((text (keybase--strip-indentation-char (subseq string (aref reg-starts 0) (aref reg-ends 0)))))
+                                   (list (cons :quote (keybase--markup-paragraphs-inner text)))))))
 
 (defun keybase--markup-codeblocks (string)
   (loop with result = nil
@@ -129,32 +148,95 @@
                    (funcall next-fn v)
                  v)))
 
-;; TODO: This is not converted yet
+(defun keybase--markup-highlight (string)
+  (let ((pos 0)
+        (length (length string))
+        (result nil))
+    (cl-labels ((collect-part (v)
+                              (when (< pos v) (push (subseq string pos v) result))))
+      (loop while (< pos length)
+            do (let ((match-start (string-match "\\(?:^\\|\\W\\)\\([*_]\\)\\(.+?\\)\\(\\1\\)\\(?:$\\|\\W\\)" string pos)))
+                 (if match-start
+                     ;; We don't do maths markup right now, but once we do, is should be done here
+                     (let ((scode-s (match-beginning 1))
+                           (ecode-e (match-end 3))
+                           (s (match-beginning 2))
+                           (e (match-end 2)))
+                       (collect-part scode-s)
+                       (let ((code (aref string scode-s)))
+                         (push (cons (cond ((eql code ?*)
+                                            :bold)
+                                           ((eql code ?_)
+                                            :italics)
+                                           (t
+                                            (error "Unexpected code")))
+                                     (subseq string s e))
+                               result))
+                       (setq pos ecode-e))
+                   ;; ELSE: No more matches
+                   (progn
+                     (collect-part length)
+                     (setq pos length)))))
+      (reverse result))))
+
+(defun keybase--markup-custom-2 (string)
+  (if keybase--custom-parser-2
+      (funcall keybase--custom-parser-2 string #'keybase--markup-highlight)
+    (keybase--markup-highlight string)))
+
+(defun keybase--markup-url (string)
+  (keybase--markup-custom-2 string))
+
+(defun keybase--markup-maths (string)
+  ;; Maths needs to be extracted before anything else, since it can
+  ;; contain a mix of pretty much every other character, and we don't
+  ;; want that to mess up any other highlighting.
+  (let ((pos 0)
+        (length (length string))
+        (result nil))
+    (cl-labels ((collect-part (v)
+                              (when (< pos v)
+                                (setq result (append result (keybase--markup-url (subseq string pos v)))))))
+      (loop while (< pos length)
+            do (let ((match-start (string-match "\\(?:^\\|\\W\\)\\(`[^`]+`\\)\\(?:$\\|\\W\\)" string pos)))
+                 (if match-start
+                     ;; We don't do maths markup right now, but once we do, is should be done here
+                     (let ((s (match-beginning 1))
+                           (e (match-end 1)))
+                       (collect-part s)
+                       (setq result (append result (list (cons :code (subseq string (1+ s) (1- e))))))
+                       (setq pos e))
+                   ;; ELSE: No more matches
+                   (progn
+                     (collect-part length)
+                     (setq pos length)))))
+      result)))
+
+(defun keybase--markup-custom-1 (string)
+  (if keybase--custom-parser-1
+      (funcall keybase--custom-parser-1 string #'keybase--markup-maths)
+      (keybase--markup-maths string)))
+
 (defun keybase--markup-string (string)
   (if keybase--markup-allow-nl
-      (loop for line in (split-sequence:split-sequence #\Newline string)
+      (loop for line in (keybase--split-with-regexp "\n" string :empty t)
             for first = t then nil
             unless first
             append '((:newline))
-            append (markup-custom-1 line))
-    (markup-custom-1 string)))
+            unless (equal line "")
+            append (keybase--markup-custom-1 line))
+    (keybase--markup-custom-1 string)))
 
 (defun keybase--markup-paragraphs-inner (string)
-  (loop with pos = 0
-        with length = (length string)
-        with result = nil
-        while (< pos length)
-        do (let ((match-start (string-match "\n\n" string start)))
-             (if match-start
-                 (let ((match-end (match-end 0)))
-                   (when (< pos match-start)
-                     (push (cons :paragraph (keybase--markup-string (subseq string pos match-start)))))
-                   (setq pos match-end))
-               ;; ELSE: No more matches, collect the last paragraph
-               (push (cons :paragraph (keybase--markup-string (subseq string pos length))))))))
+  (loop
+   for v in (keybase--split-with-regexp "\n\\{2,\\}" string)
+   when (plusp (length v))
+   collect (cons :paragraph (keybase--markup-string v))))
 
-(defun keybase--markup-paragraphs (string &key allow-nl)
+(cl-defun keybase--markup-paragraphs (string &key allow-nl)
   (let ((keybase--markup-allow-nl allow-nl))
     (keybase--select-blocks string #'keybase--markup-codeblocks
                             (lambda (s)
                               (keybase--select-blocks s #'keybase--markup-indent #'keybase--markup-paragraphs-inner)))))
+
+(provide 'keybase-markup)
