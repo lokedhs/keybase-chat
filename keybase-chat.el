@@ -372,13 +372,12 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
 (defun keybase--make-in-progress-id ()
   (format "temp-%d" (incf keybase--current-id)))
 
-(defun keybase--insert-message-content (pos id timestamp sender message image)
+(defun keybase--insert-message-content (id timestamp sender message image)
   "Insert message content at position POS.
 ID may be nil, in which case this message represents an
 in-progress message which is inserted while a new message is
 being inserted. It will later be replaced with the real content
 once it is received from the server."
-  (goto-char pos)
   (let ((inhibit-read-only t))
     (let ((start (point)))
       (insert (propertize (funcall keybase-attribution sender timestamp)
@@ -415,7 +414,8 @@ once it is received from the server."
                          do (setq prev-pos pos)
                          until (= pos (point-min))
                          finally (return prev-pos))))
-      (keybase--insert-message-content new-pos id timestamp sender message image))))
+      (goto-char new-pos)
+      (keybase--insert-message-content id timestamp sender message image))))
 
 (defun keybase--find-message-in-log (id)
   (loop with curr = (point-min)
@@ -567,13 +567,14 @@ once it is received from the server."
             (json-read)))
       (kill-buffer output-buf))))
 
-(defun keybase--request-api-async (command command-args arg callback)
+(cl-defun keybase--request-api-async (command command-args arg callback &key buffer)
   (let ((output-buf (generate-new-buffer " *keybase api*")))
     (let ((proc (make-process :name "keybase-api"
                               :command (cons command command-args)
-                              :buffer output-buf
+                              :buffer (or buffer output-buf)
                               :stderr " *keybase api error*"
                               :coding 'utf-8
+                              :filter (lambda (proc s) (with-current-buffer output-buf (insert s)))
                               :sentinel (lambda (proc type)
                                           (when (string-match "^\\(finished\\|deleted\\|exited\\|failed\\)" type)
                                             (unwind-protect
@@ -615,8 +616,7 @@ once it is received from the server."
     (error "No channel info available in this buffer"))
   (save-excursion
     (goto-char keybase--output-marker)
-    (keybase--insert-message-content (point)
-                                     nil
+    (keybase--insert-message-content nil
                                      (time-to-seconds (current-time))
                                      (with-current-buffer keybase--proc-buf keybase--username)
                                      str
@@ -807,7 +807,8 @@ once it is received from the server."
                                                 (team-list (make-hash-table :test 'equal))
                                                 (private-list (make-hash-table :test 'equal)))
                                             (keybase--render-team-list channels)
-                                            (keybase--render-private-list channels))))))))))
+                                            (keybase--render-private-list channels)))))
+                                    :buffer (current-buffer))))))
 
 (defun keybase-list-conversations ()
   (interactive)
@@ -820,5 +821,56 @@ once it is received from the server."
       (keybase-conversations-list-mode)
       (keybase-conversations-refresh))
     (pop-to-buffer buffer)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Search
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defvar keybase-search-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "q") 'quit-window)
+    map))
+
+(define-derived-mode keybase-search-mode nil "Keybase search"
+  "Mode for buffers containing keybase search results"
+  (use-local-map keybase-search-map))
+
+(defun keybase--format-search-results (json)
+  (setq xyz json)
+  (let ((hits (keybase--json-find json '(result hits))))
+    (loop for entry across hits
+          do (let ((msg (keybase--json-find entry '(hitMessage))))
+               (keybase--with-json-bind ((message-id (valid messageID))
+                                         (ctime (valid ctime))
+                                         (sender-username (valid senderUsername))
+                                         (message-type (valid messageBody messageType)))
+                   msg
+                 (when (eql message-type 1)
+                   (let ((text (keybase--json-find msg '(valid messageBody text body))))
+                     (keybase--insert-message-content message-id ctime sender-username text nil))))))))
+
+(defun keybase-search-channel (query)
+  (interactive "sQuery: ")
+  (unless (eq major-mode 'keybase-channel-mode)
+    (error "Not a channel buffer"))
+  (let ((result-buffer (generate-new-buffer "*keybase search*"))
+        (channel-info keybase--channel-info))
+    (with-current-buffer result-buffer
+      (keybase-search-mode)
+      (insert "Loading results\n")
+      (read-only-mode 1)
+      (keybase--request-api-async keybase--program
+                                  '("chat" "api")
+                                  `((method . "searchregexp")
+                                    (params . ((options . ((channel . ,(keybase--channel-info-as-json channel-info))
+                                                           (query . ,query)
+                                                           (is_regex . t))))))
+                                  (lambda (json)
+                                    (with-current-buffer result-buffer
+                                      (let ((inhibit-read-only t))
+                                        (delete-region (point-min) (point-max))
+                                        (keybase--format-search-results json))))
+                                  :buffer (current-buffer)))
+    (pop-to-buffer result-buffer)))
 
 (provide 'keybase)
