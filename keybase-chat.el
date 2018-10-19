@@ -163,7 +163,10 @@ not been confirmed from the server yet.")
 (defvar keybase--proc-buf nil)
 (defvar keybase--active-buffers nil
   "List of active channels.
-Each entry is of the form (CHANNEL-INFO BUFFER)")
+Each entry is of the form (CHANNEL-INFO . BUFFER)")
+(defvar keybase--channels nil
+  "List of channels.
+Each entry is of the form (CHANNEL-INFO UNREAD")
 
 (defvar keybase-channel-mode-map
   (let ((map (make-sparse-keymap)))
@@ -247,6 +250,51 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
     (when recompute
       (keybase--recompute-modeline))))
 
+(defvar keybase--mark-unread-in-progress nil)
+(defvar keybase--mark-unread-pending nil)
+
+(defun keybase--find-most-recent-message ()
+  (let ((pos (previous-single-char-property-change (point-max) 'keybase-remote-message-id)))
+    (if pos
+        (get-char-property (1- pos) 'keybase-remote-message-id)
+      nil)))
+
+(defun keybase--mark-unread-start-process ()
+  (when keybase--mark-unread-in-progress
+    (error "Mark unread already in progress"))
+  (if-let ((msgid (keybase--find-most-recent-message)))
+      (let ((proc (keybase--request-api-async keybase--program
+                                              '("chat" "api")
+                                              `((method . "mark")
+                                                (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info)))))))
+                                              (lambda (json)
+                                                (setq keybase--mark-unread-in-progress nil)
+                                                (keybase--mark-pending-unread)))))
+        (setq keybase--mark-unread-in-progress proc)
+        t)
+    ;; ELSE: Return nil to indicate that a process was not started
+    nil))
+
+(defun keybase--mark-pending-unread ()
+  (loop while keybase--mark-unread-pending
+        until (let ((req (car keybase--mark-unread-pending)))
+                (setq keybase--mark-unread-pending (cdr keybase--mark-unread-pending))
+                (with-current-buffer (car keybase--mark-unread-pending)
+                  (keybase--mark-unread-start-process)))))
+
+(defun keybase--mark-unread ()
+  (when (plusp keybase--unread-in-channel)
+    (setq keybase--unread-in-channel 0)
+    (if keybase--mark-unread-in-progress
+        (cl-pushnew (current-buffer) keybase--mark-unread-pending)
+      (keybase--mark-unread-start-process))))
+
+(defun keybase--process-buffer-list-update ()
+  (unless (eq major-mode 'keybase-channel-mode)
+    (error "This function should only be called with channel buffers"))
+  (when (eq (current-buffer) (car (buffer-list)))
+    (keybase--mark-unread)))
+
 (defun keybase--create-buffer (channel-info)
   ;; First ensure that the listener is running
   (keybase--find-process-buffer)
@@ -257,6 +305,7 @@ Each entry is of the form (CHANNEL-INFO BUFFER)")
       (setq-local keybase--channel-info channel-info)
       (setq-local keybase--unread-in-channel 0)
       (add-hook 'kill-buffer-hook 'keybase--buffer-closed nil t)
+      (add-hook 'buffer-list-update-hook 'keybase--process-buffer-list-update nil t)
       (push (cons channel-info buffer) keybase--active-buffers)
       (keybase--load-initial-messages))
     (unless (member 'keybase-display-notifications-string global-mode-string)
@@ -402,7 +451,7 @@ once it is received from the server."
                                            (list 'keybase-in-progress gen-id
                                                  'keybase-content message
                                                  'face 'keybase-message-text-content-in-progress)
-                                         nil))))))))
+                                         (list 'keybase-remote-message-id id)))))))))
 
 (defun keybase--insert-message (id timestamp sender message image)
   (save-excursion
@@ -587,7 +636,8 @@ once it is received from the server."
       (when arg
         (let ((encoded (json-encode arg)))
           (process-send-string proc encoded))
-        (process-send-eof proc)))))
+        (process-send-eof proc)
+        proc))))
 
 (defun keybase--request-chat-api (arg)
   (keybase--request-api keybase--program '("chat" "api") arg))
@@ -604,12 +654,19 @@ once it is received from the server."
         (topic-name   (keybase--json-find json '(topic_name)   :error-if-missing nil)))
     (list members-type name topic-name)))
 
-(defun keybase--list-channels ()
+(defun keybase--list-channels (&optional force-reload)
+  (if (and keybase--channels (not force-reload))
+      keybase--channels
+    (keybase--reload-channels)))
+
+(defun keybase--reload-channels ()
   (let ((result (keybase--request-chat-api '((method . "list")))))
-    (loop for conversation across (keybase--json-find result '(result conversations))
-          for channel-name = (keybase--parse-channel-name (keybase--json-find conversation '(channel)))
-          for unread = (not (eq (keybase--json-find conversation '(unread)) :false))
-          collect (list channel-name unread))))
+    (let ((channels (loop for conversation across (keybase--json-find result '(result conversations))
+                          for channel-name = (keybase--parse-channel-name (keybase--json-find conversation '(channel)))
+                          for unread = (not (eq (keybase--json-find conversation '(unread)) :json-false))
+                          collect (list channel-name unread))))
+      (setq keybase--channels channels)
+      channels)))
 
 (defun keybase--input (str)
   (unless keybase--channel-info
@@ -659,7 +716,9 @@ once it is received from the server."
 		     (progn
 		       (keybase--handle-incoming-chat-message (json-read-from-string content))
 		       (setq pos nl))
-		   (json-readtable-error (message "ate bad json") (setq pos nl)))))
+		   (json-readtable-error
+                    (message "ate bad json: %S" content)
+                    (setq pos nl)))))
       (delete-region (point-min) (point)))))
 
 (defun keybase--connect-to-server ()
@@ -667,16 +726,21 @@ once it is received from the server."
     ;; Ensure that there is no buffer with this name already
     (when (get-buffer name)
       (error "keybase server buffer already exists"))
-    (let ((buf (get-buffer-create name)))
+    (let* ((buf (get-buffer-create name))
+           (pipe (make-pipe-process :name "keybase server error output"
+                                    :buffer buf
+                                    :filter (lambda (proc output)
+                                              ;; Ignore error output
+                                              nil))))
       (let ((proc (make-process :name "keybase server"
                                 :buffer buf
                                 :command '("keybase" "chat" "api-listen")
                                 :coding 'utf-8
-                                :filter 'keybase--filter-command)))
+                                :filter 'keybase--filter-command
+                                :stderr pipe)))
         (with-current-buffer buf
           (let ((json (keybase--request-api keybase--program '("status" "--json") nil)))
             (setq-local keybase--server-process proc)
-            (setq-local keybase--channels nil)
             (setq-local keybase--username (keybase--json-find json '(Username)))))
         (setq keybase--proc-buf buf)
         buf))))
