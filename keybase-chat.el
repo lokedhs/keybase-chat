@@ -179,6 +179,13 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 (define-derived-mode keybase-channel-mode nil "Keybase"
   "Mode for Keybase channel content"
   (use-local-map keybase-channel-mode-map)
+  (insert (propertize "[Load more messages]"
+                      'font-lock-face 'link
+                      'mouse-face 'hilight
+                      'keymap 'keybase-load-more-keymap))
+  (insert "\n\n")
+  (setq-local keybase--start-of-messages-marker (make-marker))
+  (set-marker keybase--start-of-messages-marker (point))
   (setq-local keybase--output-marker (make-marker))
   (setq-local keybase--input-marker (make-marker))
   (set-marker keybase--output-marker (point-max))
@@ -293,7 +300,6 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
   (unless (eq major-mode 'keybase-channel-mode)
     (error "This function should only be called with channel buffers"))
   (when (eq (current-buffer) (car (buffer-list)))
-    (message "About to mark unread, selected frame: %S" (selected-frame))
     (keybase--mark-unread)))
 
 (defun keybase--create-buffer (channel-info)
@@ -308,7 +314,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
       (add-hook 'kill-buffer-hook 'keybase--buffer-closed nil t)
       (add-hook 'buffer-list-update-hook 'keybase--process-buffer-list-update nil t)
       (push (cons channel-info buffer) keybase--active-buffers)
-      (keybase--load-initial-messages))
+      (keybase-load-messages 10))
     (unless (member 'keybase-display-notifications-string global-mode-string)
       (if global-mode-string
           (setq global-mode-string (append global-mode-string '(keybase-display-notifications-string)))
@@ -327,10 +333,12 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           ((eq if-missing :error)
            (error "No buffer for channel %S" channel-info)))))
 
-(defun keybase--load-initial-messages ()
+(cl-defun keybase-load-messages (&optional (num 10))
+  "Load NUM messages from the message history."
+  (interactive)
   (let* ((messages-json (keybase--request-chat-api `((method . "read")
-                                                (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                                       (pagination . ((num . 10))))))))))
+                                                     (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                                            (pagination . ((num . 10))))))))))
          (messages (keybase--json-find messages-json '(result messages))))
     (loop for msg-entry across messages
           for msg = (keybase--json-find msg-entry '(msg))
@@ -341,6 +349,12 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           for type = (keybase--json-find content '(type))
           when (equal type "text")
           do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body)) nil))))
+
+(defvar keybase-load-more-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-2] 'keybase-load-messages)
+    (define-key map (kbd "RET") 'keybase-load-messages)
+    map))
 
 (defun keybase--format-date (timestamp)
   (let ((time (seconds-to-time timestamp)))
@@ -460,9 +474,9 @@ once it is received from the server."
     (let ((new-pos (loop with prev-pos = (point)
                          for pos = (previous-single-char-property-change prev-pos 'keybase-timestamp)
                          until (let ((prop (get-char-property pos 'keybase-timestamp)))
-                                 (and prop (< prop timestamp)))
+                                 (or (and prop (< prop timestamp))
+                                     (<= pos (marker-position keybase--start-of-messages-marker))))
                          do (setq prev-pos pos)
-                         until (= pos (point-min))
                          finally (return prev-pos))))
       (goto-char new-pos)
       (keybase--insert-message-content id timestamp sender message image))))
@@ -618,7 +632,6 @@ once it is received from the server."
       (kill-buffer output-buf))))
 
 (cl-defun keybase--request-api-async (command command-args arg callback &key buffer)
-  (message "arg = %S" arg)
   (let ((output-buf (generate-new-buffer " *keybase api*")))
     (let ((proc (make-process :name "keybase-api"
                               :command (cons command command-args)
