@@ -279,7 +279,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
   (loop while keybase--mark-unread-pending
         until (let ((req (car keybase--mark-unread-pending)))
                 (setq keybase--mark-unread-pending (cdr keybase--mark-unread-pending))
-                (with-current-buffer (car keybase--mark-unread-pending)
+                (with-current-buffer req
                   (keybase--mark-unread-start-process)))))
 
 (defun keybase--mark-unread ()
@@ -293,6 +293,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
   (unless (eq major-mode 'keybase-channel-mode)
     (error "This function should only be called with channel buffers"))
   (when (eq (current-buffer) (car (buffer-list)))
+    (message "About to mark unread, selected frame: %S" (selected-frame))
     (keybase--mark-unread)))
 
 (defun keybase--create-buffer (channel-info)
@@ -617,6 +618,7 @@ once it is received from the server."
       (kill-buffer output-buf))))
 
 (cl-defun keybase--request-api-async (command command-args arg callback &key buffer)
+  (message "arg = %S" arg)
   (let ((output-buf (generate-new-buffer " *keybase api*")))
     (let ((proc (make-process :name "keybase-api"
                               :command (cons command command-args)
