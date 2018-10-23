@@ -5,6 +5,7 @@
 (defvar keybase--markup-allow-nl nil)
 (defvar keybase--custom-parser-1 nil)
 (defvar keybase--custom-parser-2 nil)
+(defvar keybase--custom-parser-3 nil)
 
 (defun keybase--trim-blanks-and-newlines (s)
   (string-trim s))
@@ -152,8 +153,7 @@
   (let ((pos 0)
         (length (length string))
         (result nil))
-    (cl-labels ((collect-part (v)
-                              (when (< pos v) (push (subseq string pos v) result))))
+    (cl-labels ((collect-part (v) (when (< pos v) (setq result (append result (keybase--markup-custom-3 (subseq string pos v)))))))
       (loop while (< pos length)
             do (let ((match-start (string-match "\\(?:^\\|\\W\\)\\([*_]\\)\\(.+?\\)\\(\\1\\)\\(?:$\\|\\W\\)" string pos)))
                  (if match-start
@@ -163,25 +163,34 @@
                            (e (match-end 2)))
                        (collect-part scode-s)
                        (let ((code (aref string scode-s)))
-                         (push (cons (cond ((eql code ?*)
-                                            :bold)
-                                           ((eql code ?_)
-                                            :italics)
-                                           (t
-                                            (error "Unexpected code")))
-                                     (subseq string s e))
-                               result))
+                         (setq result (append result (list (cons (cond ((eql code ?*)
+                                                                        :bold)
+                                                                       ((eql code ?_)
+                                                                        :italics)
+                                                                       (t
+                                                                        (error "Unexpected code")))
+                                                                 (keybase--markup-custom-3 (subseq string s e)))))))
                        (setq pos ecode-e))
                    ;; ELSE: No more matches
                    (progn
                      (collect-part length)
                      (setq pos length)))))
-      (reverse result))))
+      result)))
+
+(defun keybase--markup-custom-1 (string)
+  (if keybase--custom-parser-1
+      (funcall keybase--custom-parser-1 string #'keybase--markup-maths)
+      (keybase--markup-maths string)))
 
 (defun keybase--markup-custom-2 (string)
   (if keybase--custom-parser-2
       (funcall keybase--custom-parser-2 string #'keybase--markup-highlight)
     (keybase--markup-highlight string)))
+
+(defun keybase--markup-custom-3 (string)
+  (if keybase--custom-parser-3
+      (funcall keybase--custom-parser-3 string (lambda (v) (list v)))
+    (list string)))
 
 (defun keybase--markup-url (string)
   (keybase--markup-custom-2 string))
@@ -199,7 +208,7 @@
       (loop while (< pos length)
             do (let ((match-start (string-match "\\(?:^\\|\\W\\)\\(`[^`]+`\\)\\(?:$\\|\\W\\)" string pos)))
                  (if match-start
-                     ;; We don't do maths markup right now, but once we do, is should be done here
+                     ;; We don't do maths markup right now, but once we do, it should be done here
                      (let ((s (match-beginning 1))
                            (e (match-end 1)))
                        (collect-part s)
@@ -210,11 +219,6 @@
                      (collect-part length)
                      (setq pos length)))))
       result)))
-
-(defun keybase--markup-custom-1 (string)
-  (if keybase--custom-parser-1
-      (funcall keybase--custom-parser-1 string #'keybase--markup-maths)
-      (keybase--markup-maths string)))
 
 (defun keybase--markup-string (string)
   (if keybase--markup-allow-nl

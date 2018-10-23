@@ -156,6 +156,32 @@ not been confirmed from the server yet.")
   (when-let ((channel (get-char-property (point) 'keybase-channel-name)))
     (keybase-join-channel channel)))
 
+(defvar keybase-username-link-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-2] 'keybase-open-selected-username)
+    (define-key map (kbd "RET") 'keybase-open-selected-username)
+    map))
+
+(defun keybase-open-selected-username ()
+  (interactive)
+  (when-let ((user (get-char-property (point) 'keybase-user)))
+    (keybase-join-channel (keybase--private-conversation-channel-name user))))
+
+(defun keybase--make-clickable-username (name)
+  (propertize (format "@%s" name)
+              'font-lock-face 'link
+              'mouse-face 'highlight
+              'help-echo (format "mouse-2: start a private chat with %s" name)
+              'keybase-user name
+              'keymap keybase-username-link-keymap))
+
+(defun keybase--private-conversation-channel-name (user)
+  (let ((current-name (with-current-buffer keybase--proc-buf keybase--username)))
+    (list "impteamnative" (if (string< current-name user)
+                              (format "%s,%s" current-name user)
+                            (format "%s,%s" user current-name))
+          nil)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Channel mode
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -413,23 +439,50 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
               (:newline
                (insert "\n"))
               (:bold
-               (insert (propertize (cdr element) 'face 'keybase-message-text-content-bold)))
+               (let ((start (point)))
+                 (keybase--insert-markup-inner (cdr element))
+                 (add-text-properties start (point) (list 'face 'keybase-message-text-content-bold))))
               (:italics
-               (insert (propertize (cdr element) 'face 'keybase-message-text-content-italics)))
+               (let ((start (point)))
+                 (keybase--insert-markup-inner (cdr element))
+                 (add-text-properties start (point) (list 'face 'keybase-message-text-content-italics))))
               (:code
                (insert (propertize (cdr element) 'face 'keybase-message-text-content-code)))
               (:code-block
                (insert "\n")
                (insert (propertize (third element) 'face 'keybase-message-text-content-code))
-               (insert "\n")))))))
+               (insert "\n"))
+              (:user
+               (insert (keybase--make-clickable-username (cdr element)))))))))
 
 (defun keybase--insert-markup-inner (content)
   (loop for v in content
         do (keybase--render-markup-element v)))
 
-(defun keybase--insert-markup (content)
-  (let ((keybase--first-paragraph t))
-    (keybase--insert-markup-inner content)))
+(defun keybase--parse-user (string fn)
+  (let ((pos 0)
+        (length (length string))
+        (result nil))
+    (cl-labels ((append-res (elems) (setq result (append result elems)))
+                (collect-part (v) (when (< pos v) (setq result (append result (funcall fn (subseq string pos v)))))))
+      (loop while (< pos length)
+            do (let ((result (string-match "@\\([a-z0-9_]+\\)\\(?:$\\|\\W\\)" string pos)))
+                 (if result
+                     (let ((user (match-string 1 string))
+                           (end-pos (match-end 1)))
+                       (collect-part result)
+                       (append-res `((:user . ,user)))
+                       (setq pos end-pos))
+                   ;; ELSE: No more results
+                   (collect-part length)
+                   (setq pos length))))
+      result)))
+
+(defun keybase--insert-markup-string (message)
+  (let ((content (let ((keybase--custom-parser-3 #'keybase--parse-user))
+                   (keybase--markup-paragraphs message :allow-nl t))))
+    (let ((keybase--first-paragraph t))
+      (keybase--insert-markup-inner content))))
 
 (defvar keybase--current-id 0)
 
@@ -448,7 +501,7 @@ once it is received from the server."
                           'face 'keybase-message-from))
       (let ((text-start (point)))
         (when (> (length message) 0)
-          (keybase--insert-markup (keybase--markup-paragraphs message :allow-nl t))
+          (keybase--insert-markup-string message)
           (insert "\n"))
         (when image
           (destructuring-bind (image-title image-filename)
@@ -915,7 +968,6 @@ once it is received from the server."
   (use-local-map keybase-search-map))
 
 (defun keybase--format-search-results (json)
-  (setq xyz json)
   (let ((hits (keybase--json-find json '(result hits))))
     (loop for entry across hits
           do (let ((msg (keybase--json-find entry '(hitMessage))))
@@ -926,18 +978,31 @@ once it is received from the server."
                    msg
                  (when (eql message-type 1)
                    (let ((text (keybase--json-find msg '(valid messageBody text body))))
-                     (keybase--insert-message-content message-id ctime sender-username text nil))))))))
+                     (keybase--insert-message-content message-id (/ ctime 1000) sender-username text nil))))))))
+
+(defun keybase--make-search-buffer ()
+  (let ((buffer-name "*keybase search*"))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t))
+            (delete-region (point-min) (point-max))
+            buffer))
+      ;; ELSE: Need to create the buffer
+      (let ((buffer (generate-new-buffer buffer-name)))
+        (with-current-buffer buffer
+          (keybase-search-mode)
+          (read-only-mode 1))
+        buffer))))
 
 (defun keybase-search-channel (query)
   (interactive "sQuery: ")
   (unless (eq major-mode 'keybase-channel-mode)
     (error "Not a channel buffer"))
-  (let ((result-buffer (generate-new-buffer "*keybase search*"))
+  (let ((buffer (keybase--make-search-buffer))
         (channel-info keybase--channel-info))
-    (with-current-buffer result-buffer
-      (keybase-search-mode)
-      (insert "Loading results\n")
-      (read-only-mode 1)
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (insert "Loading results\n"))
       (keybase--request-api-async keybase--program
                                   '("chat" "api")
                                   `((method . "searchregexp")
@@ -945,11 +1010,31 @@ once it is received from the server."
                                                            (query . ,query)
                                                            (is_regex . t))))))
                                   (lambda (json)
-                                    (with-current-buffer result-buffer
+                                    (with-current-buffer buffer
                                       (let ((inhibit-read-only t))
                                         (delete-region (point-min) (point-max))
                                         (keybase--format-search-results json))))
                                   :buffer (current-buffer)))
-    (pop-to-buffer result-buffer)))
+    (pop-to-buffer buffer)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; User information
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defvar keybase-user-info-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "q") 'quit-window)
+    map))
+
+(define-derived-mode keybase-user-info-mode nil "Keybase user info"
+  (use-local-map keybase-user-info-map))
+
+(defun keybase-user-info (user)
+  (interactive "sUsername: ")
+  (let ((buffer (get-buffer-create "*keybase user info*")))
+    (with-current-buffer buffer
+      (keybase-user-info-mode)
+      (insert "insert user info"))
+    (pop-to-buffer buffer)))
 
 (provide 'keybase)
