@@ -296,6 +296,11 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     (define-key map (kbd "RET") 'keybase-send-input-line)
     ;;(define-key map (kbd "@") 'keybase-insert-user)
     (define-key map (kbd "C-c C-d") 'keybase-delete-message)
+    (define-key map [menu-bar keybase] (cons "Keybase" (make-sparse-keymap "Keybase")))
+    (define-key map [menu-bar keybase join-channel] '("Join channel" . keybase-join-channel))
+    (define-key map [menu-bar keybase create-private-conversation] '("Private conversation" . keybase-create-private-converstion))
+    (define-key map [menu-bar keybase show-user-info] '("User info" . keybase-user-info))
+    (define-key map [menu-bar keybase delete-message] '("Delete message" . keybase-delete-message))
     map))
 
 (define-derived-mode keybase-channel-mode nil "Keybase"
@@ -592,7 +597,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
   (format "temp-%d" (incf keybase--current-id)))
 
 (defun keybase--insert-message-content (id timestamp sender message image)
-  "Insert message content at position POS.
+  "Insert message content at the current cursor position.
 ID may be nil, in which case this message represents an
 in-progress message which is inserted while a new message is
 being inserted. It will later be replaced with the real content
@@ -675,16 +680,12 @@ once it is received from the server."
       (when (zerop old)
         (keybase--recompute-modeline)))))
 
-(defun keybase--delete-message-by-pos (pos)
-  (destructuring-bind (start end)
-      pos
-    (let ((inhibit-read-only t))
-      (delete-region start end))))
-
 (defun keybase--delete-message (id)
+  (message "deleting message %S" id)
   (let ((old-message-pos (keybase--find-message-in-log id)))
     (when old-message-pos
-      (keybase--delete-message-by-pos old-message-pos))))
+      (let ((inhibit-read-only t))
+        (delete-region (first old-message-pos) (second old-message-pos))))))
 
 (defun keybase--handle-delete (json)
   (let ((message-list (keybase--json-find json '(content delete messageIDs))))
@@ -698,16 +699,20 @@ once it is received from the server."
     ;; anything (we don't want old messages added just because someone
     ;; edited them)
     (when old-message-pos
-      (save-excursion
-        (let* ((msg (car old-message-pos))
-               (old-timestamp (get-char-property msg 'keybase-timestamp)))
-          (unless old-timestamp
-            (error "no timestamp for previous message"))
-          (keybase--delete-message-by-pos old-message-pos)
-          ;; An UPDATE message contains the same fields as a TEXT message.
-          (let ((message (keybase--json-find json '(content edit body)))
-                (sender (keybase--json-find json '(sender username))))
-            (keybase--insert-message-content msg old-msgid old-timestamp sender message nil)))))))
+      (destructuring-bind (old-message-start old-message-end)
+          old-message-pos
+        (save-excursion
+          (let* ((msg old-message-start)
+                 (old-timestamp (get-char-property msg 'keybase-timestamp)))
+            (unless old-timestamp
+              (error "no timestamp for previous message"))
+            (let ((inhibit-read-only t))
+              (delete-region old-message-start old-message-end))
+            ;; An UPDATE message contains the same fields as a TEXT message.
+            (let ((message (keybase--json-find json '(content edit body)))
+                  (sender (keybase--json-find json '(sender username))))
+              (goto-char old-message-start)
+              (keybase--insert-message-content msg old-timestamp sender message nil))))))))
 
 (defvar *keybase--attachment-type-none* 0)
 (defvar *keybase--attachment-type-image* 1)
@@ -963,6 +968,16 @@ once it is received from the server."
   (interactive (list (keybase--choose-channel-info)))
   (let ((buf (keybase--find-channel-buffer channel-info :if-missing :create)))
     (switch-to-buffer buf)))
+
+(defun keybase-create-private-converstion (user)
+  (interactive (let* ((v (get-char-property (point) 'keybase-user))
+                      (default-name (or v (get-char-property (point) 'keybase-sender))))
+                 (let ((name (read-string (if default-name
+                                              (format "User (default %s): " default-name)
+                                            "User: ")
+                                          nil nil default-name nil)))
+                   (list name))))
+  (keybase-join-channel (keybase--private-conversation-channel-name user)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Channel summary
