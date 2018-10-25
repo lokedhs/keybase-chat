@@ -193,6 +193,40 @@ finished."
                                (keybase--insert-image-handler overlay data))
                              :as-json-p nil))))
 
+(defun keybase--find-or-make-empty-buffer (name initialiser)
+  (let ((buffer (get-buffer name)))
+    (if buffer
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t))
+            (delete-region (point-min) (point-max))
+            buffer))
+      (let ((buffer (generate-new-buffer name)))
+        (with-current-buffer buffer
+          (funcall initialiser))
+        buffer))))
+
+(defvar keybase-button-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-2] 'keybase-open-selected-button)
+    (define-key map (kbd "RET") 'keybase-open-selected-button)
+    map))
+
+(defun keybase-open-selected-button ()
+  (interactive)
+  (let ((callback (get-char-property (point) 'button-function))
+        (data (get-char-property (point) 'button-data)))
+    (unless (and callback data)
+      (error "Point is not on a button"))
+    (funcall callback data)))
+
+(cl-defun keybase--make-clickable-button (message function data)
+  (propertize message
+              'font-lock-face 'link
+              'keymap keybase-button-keymap
+              'mouse-face 'highlight
+              'button-function function
+              'button-data data))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Channel tools
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -225,15 +259,17 @@ finished."
 (defun keybase-open-selected-username ()
   (interactive)
   (when-let ((user (get-char-property (point) 'keybase-user)))
-    (keybase-join-channel (keybase--private-conversation-channel-name user))))
+    (keybase-user-info user)))
 
-(defun keybase--make-clickable-username (name)
-  (propertize (format "@%s" name)
-              'font-lock-face 'link
-              'mouse-face 'highlight
-              'help-echo (format "mouse-2: start a private chat with %s" name)
-              'keybase-user name
-              'keymap keybase-username-link-keymap))
+(cl-defun keybase--make-clickable-username (name &key include-prefix highlight)
+  (apply #'propertize (format "%s%s" (if include-prefix "@" "") name)
+         'font-lock-face 'link
+         'help-echo (format "mouse-2: open user info for %s" name)
+         'keybase-user name
+         'keymap keybase-username-link-keymap
+         (if highlight
+             (list 'mouse-face 'highlight)
+           nil)))
 
 (defun keybase--private-conversation-channel-name (user)
   (let ((current-name (with-current-buffer keybase--proc-buf keybase--username)))
@@ -446,6 +482,10 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
   (let ((time (seconds-to-time timestamp)))
     (format-time-string "%Y-%m-%d %H:%M:%S" time)))
 
+(defun keybase--format-simple-date (timestamp)
+  (let ((time (seconds-to-time timestamp)))
+    (format-time-string "%H:%M" time)))
+
 (defun keybase--recompute-modeline ()
   (setq keybase-display-notifications-string (keybase--make-unread-notification-string))
   (force-mode-line-update t))
@@ -469,7 +509,9 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
         ""))))
 
 (defun keybase-default-attribution (sender timestamp)
-  (format "[%s] %s " sender (keybase--format-date timestamp)))
+  (format "[%s] %s "
+          (keybase--make-clickable-username sender :highlight nil)
+          (keybase--format-simple-date timestamp)))
 
 (defvar keybase--first-paragraph nil)
 
@@ -513,7 +555,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
                (insert (propertize (third element) 'face 'keybase-message-text-content-code))
                (insert "\n"))
               (:user
-               (insert (keybase--make-clickable-username (cdr element)))))))))
+               (insert (keybase--make-clickable-username (cdr element) :include-prefix t :highlight t))))))))
 
 (defun keybase--insert-markup-inner (content)
   (loop for v in content
@@ -1089,21 +1131,28 @@ once it is received from the server."
 (define-derived-mode keybase-user-info-mode nil "Keybase user info"
   (use-local-map keybase-user-info-map))
 
+(defun keybase--private-conversation-handler (user)
+  (keybase-join-channel (keybase--private-conversation-channel-name user)))
+
 (defun keybase--fill-in-user-lookup-results (json)
   (let ((userlist (keybase--json-find json '(them))))
     (unless (= (length userlist) 1)
       (error "Only able to fill in user info when the result has a single user"))
     (let ((user-result (aref userlist 0)))
-      (keybase--with-json-bind ((full-name (profile full_name))
+      (keybase--with-json-bind ((user (basics username))
+                                (full-name (profile full_name))
                                 (bio (profile bio))
                                 (location (profile location))
                                 (primary-image (pictures primary url)))
           user-result
         (keybase--insert-image-url-async primary-image)
         (insert "\n")
-        (insert (format "Full name: %s\n" full-name))
-        (insert (format "Bio: %s\n" bio))
-        (insert (format "Location: %s\n" location))))))
+        (insert (propertize "Name: " 'face 'bold) user "\n")
+        (insert (propertize "Full name: " 'face 'bold) full-name "\n")
+        (insert (propertize "Location: " 'face 'bold) location "\n")
+        (insert (propertize "Bio: " 'face 'bold) bio "\n\n")
+        (insert (keybase--make-clickable-button "Start private conversation" #'keybase--private-conversation-handler user))
+        (insert "\n")))))
 
 (defun keybase--start-load-user-info (user)
   (let ((buffer (current-buffer)))
@@ -1112,13 +1161,16 @@ once it is received from the server."
                                 nil
                                 (lambda (json)
                                   (with-current-buffer buffer
-                                    (keybase--fill-in-user-lookup-results json))))))
+                                    (let ((inhibit-read-only t))
+                                      (keybase--fill-in-user-lookup-results json)))))))
 
 (defun keybase-user-info (user)
   (interactive "sUsername: ")
-  (let ((buffer (get-buffer-create "*keybase user info*")))
+  (let ((buffer (keybase--find-or-make-empty-buffer "*keybase user info*"
+                                                    (lambda ()
+                                                      (keybase-user-info-mode)
+                                                      (read-only-mode 1)))))
     (with-current-buffer buffer
-      (keybase-user-info-mode)
       (keybase--start-load-user-info user))
     (pop-to-buffer buffer)))
 
