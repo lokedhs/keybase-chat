@@ -133,6 +133,66 @@ not been confirmed from the server yet.")
          ;; ELSE: The value was found in the hash table
          ,val-sym))))
 
+(defun keybase--json-parse-result-buffer ()
+  (let* ((content (buffer-substring (point) (point-max)))
+         (decoded-content (decode-coding-string content 'utf-8)))
+    (json-read-from-string decoded-content)))
+
+(defun keybase--url-handler (status buffer callback as-json-p)
+  (let ((error-status (getf status :error)))
+    (if error-status
+        (progn
+          (message "Got error: %S" status)
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer (current-buffer)))
+          (signal (car error-status) (cdr error-status)))
+      ;; ELSE: No error
+      (progn
+        (goto-char (point-min))
+        (search-forward "\n\n")
+        (let ((data (if as-json-p
+                        (potato--keybase-parse-result-buffer)
+                      (buffer-substring (point) (point-max)))))
+          (with-current-buffer buffer
+            (funcall callback data))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer (current-buffer))))))))
+
+(cl-defun keybase--url-retrieve (url method callback &key (as-json-p t) ignore-response)
+  (let ((buffer (current-buffer)))
+    (let ((url-request-method method))
+      (url-retrieve url
+                    (lambda (status)
+                      (unless ignore-response
+                        (keybase--url-handler status buffer callback as-json-p)))
+                    nil t))))
+
+(defun keybase--insert-image-handler (overlay data)
+  (let ((image (create-image data nil t))
+        (start (overlay-start overlay))
+        (end (overlay-end overlay)))
+    (delete-overlay overlay)
+    (save-excursion
+      (let ((inhibit-read-only t))
+        (goto-char start)
+        (delete-region start end)
+        (let ((start (point)))
+          (insert-image image "[image]"))))))
+
+(defun keybase--insert-image-url-async (url)
+  "Downloads and insert the image specified by URL at point.
+The download is performed in the background, and while
+downloading the image, a temporary message is displayed. This
+message is then replaced by the image once the download has
+finished."
+  (let ((start (point)))
+    (insert "[loading-image]")
+    (let ((overlay (make-overlay start (point))))
+      (keybase--url-retrieve url "GET"
+                             (lambda (data)
+                               (keybase--insert-image-handler overlay data))
+                             :as-json-p nil))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Channel tools
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1029,12 +1089,37 @@ once it is received from the server."
 (define-derived-mode keybase-user-info-mode nil "Keybase user info"
   (use-local-map keybase-user-info-map))
 
+(defun keybase--fill-in-user-lookup-results (json)
+  (let ((userlist (keybase--json-find json '(them))))
+    (unless (= (length userlist) 1)
+      (error "Only able to fill in user info when the result has a single user"))
+    (let ((user-result (aref userlist 0)))
+      (keybase--with-json-bind ((full-name (profile full_name))
+                                (bio (profile bio))
+                                (location (profile location))
+                                (primary-image (pictures primary url)))
+          user-result
+        (keybase--insert-image-url-async primary-image)
+        (insert "\n")
+        (insert (format "Full name: %s\n" full-name))
+        (insert (format "Bio: %s\n" bio))
+        (insert (format "Location: %s\n" location))))))
+
+(defun keybase--start-load-user-info (user)
+  (let ((buffer (current-buffer)))
+    (keybase--request-api-async keybase--program
+                                (list "apicall" "-a" (format "usernames=%s" user) "user/lookup")
+                                nil
+                                (lambda (json)
+                                  (with-current-buffer buffer
+                                    (keybase--fill-in-user-lookup-results json))))))
+
 (defun keybase-user-info (user)
   (interactive "sUsername: ")
   (let ((buffer (get-buffer-create "*keybase user info*")))
     (with-current-buffer buffer
       (keybase-user-info-mode)
-      (insert "insert user info"))
+      (keybase--start-load-user-info user))
     (pop-to-buffer buffer)))
 
 (provide 'keybase)
