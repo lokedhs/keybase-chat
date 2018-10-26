@@ -215,8 +215,6 @@ finished."
   (interactive)
   (let ((callback (get-char-property (point) 'button-function))
         (data (get-char-property (point) 'button-data)))
-    (unless (and callback data)
-      (error "Point is not on a button"))
     (funcall callback data)))
 
 (cl-defun keybase--make-clickable-button (message function data)
@@ -303,13 +301,13 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     (define-key map [menu-bar keybase delete-message] '("Delete message" . keybase-delete-message))
     map))
 
+(defun keybase--load-more-messages-handler (data)
+  (keybase-load-messages))
+
 (define-derived-mode keybase-channel-mode nil "Keybase"
   "Mode for Keybase channel content"
   (use-local-map keybase-channel-mode-map)
-  (insert (propertize "[Load more messages]"
-                      'font-lock-face 'link
-                      'mouse-face 'hilight
-                      'keymap 'keybase-load-more-keymap))
+  (insert (keybase--make-clickable-button "[Load more messages]" #'keybase--load-more-messages-handler nil))
   (insert "\n\n")
   (setq-local keybase--start-of-messages-marker (make-marker))
   (set-marker keybase--start-of-messages-marker (point))
@@ -441,6 +439,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
       (add-hook 'kill-buffer-hook 'keybase--buffer-closed nil t)
       (add-hook 'buffer-list-update-hook 'keybase--process-buffer-list-update nil t)
       (push (cons channel-info buffer) keybase--active-buffers)
+      (setq-local keybase--next-tag nil)
       (keybase-load-messages 10))
     (unless (member 'keybase-display-notifications-string global-mode-string)
       (if global-mode-string
@@ -465,8 +464,13 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
   (interactive)
   (let* ((messages-json (keybase--request-chat-api `((method . "read")
                                                      (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                                            (pagination . ((num . 10))))))))))
+                                                                            (pagination . (,@(if keybase--next-tag
+                                                                                                 `((next . ,keybase--next-tag))
+                                                                                               nil)
+                                                                                           (num . ,num))))))))))
+         (next-tag (keybase--json-find messages-json '(result pagination next)))
          (messages (keybase--json-find messages-json '(result messages))))
+    (setq keybase--next-tag next-tag)
     (loop for msg-entry across messages
           for msg = (keybase--json-find msg-entry '(msg))
           for id = (keybase--json-find msg '(id))
@@ -476,12 +480,6 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           for type = (keybase--json-find content '(type))
           when (equal type "text")
           do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body)) nil))))
-
-(defvar keybase-load-more-keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-2] 'keybase-load-messages)
-    (define-key map (kbd "RET") 'keybase-load-messages)
-    map))
 
 (defun keybase--format-date (timestamp)
   (let ((time (seconds-to-time (/ timestamp 1000))))
