@@ -471,7 +471,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           for msg = (keybase--json-find msg-entry '(msg))
           for id = (keybase--json-find msg '(id))
           for sender = (keybase--json-find msg '(sender username))
-          for timestamp = (keybase--json-find msg '(sent_at))
+          for timestamp = (keybase--json-find msg '(sent_at_ms))
           for content = (keybase--json-find msg '(content))
           for type = (keybase--json-find content '(type))
           when (equal type "text")
@@ -484,11 +484,11 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     map))
 
 (defun keybase--format-date (timestamp)
-  (let ((time (seconds-to-time timestamp)))
+  (let ((time (seconds-to-time (/ timestamp 1000))))
     (format-time-string "%Y-%m-%d %H:%M:%S" time)))
 
 (defun keybase--format-simple-date (timestamp)
-  (let ((time (seconds-to-time timestamp)))
+  (let ((time (seconds-to-time (/ timestamp 1000))))
     (format-time-string "%H:%M" time)))
 
 (defun keybase--recompute-modeline ()
@@ -633,9 +633,11 @@ once it is received from the server."
     (goto-char keybase--output-marker)
     (let ((new-pos (loop with prev-pos = (point)
                          for pos = (previous-single-char-property-change prev-pos 'keybase-timestamp)
-                         until (let ((prop (get-char-property pos 'keybase-timestamp)))
-                                 (or (and prop (< prop timestamp))
-                                     (<= pos (marker-position keybase--start-of-messages-marker))))
+                         do (let ((prop (get-char-property pos 'keybase-timestamp)))
+                              (when (and prop (< prop timestamp))
+                                (return prev-pos)))
+                         do (when (<= pos (marker-position keybase--start-of-messages-marker))
+                              (return (marker-position keybase--start-of-messages-marker)))
                          do (setq prev-pos pos)
                          finally (return prev-pos))))
       (goto-char new-pos)
@@ -658,7 +660,7 @@ once it is received from the server."
   (let ((id        (keybase--json-find json '(id)))
         (message   (keybase--json-find json '(content text body)))
         (sender    (keybase--json-find json '(sender username)))
-        (timestamp (keybase--json-find json '(sent_at))))
+        (timestamp (keybase--json-find json '(sent_at_ms))))
     ;; If this message is sent by us, we need to check if there is an
     ;; in-progress message inserted in the buffer. If so, it beeds to
     ;; be removed before the real one is sent.
@@ -1095,7 +1097,7 @@ once it is received from the server."
                    msg
                  (when (eql message-type 1)
                    (let ((text (keybase--json-find msg '(valid messageBody text body))))
-                     (keybase--insert-message-content message-id (/ ctime 1000) sender-username text nil))))))))
+                     (keybase--insert-message-content message-id ctime sender-username text nil))))))))
 
 (defun keybase--make-search-buffer ()
   (let ((buffer-name "*keybase search*"))
