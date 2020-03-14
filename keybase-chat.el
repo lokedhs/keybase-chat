@@ -99,6 +99,16 @@ not been confirmed from the server yet.")
 ;;; Utilities
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+
+(defun extract-unique-username (channel-name)
+  (let ((users (split-string channel-name ",")))
+    (if (= (length users) 1)
+        (first users)
+      (first (seq-filter (lambda (el) (not (string-equal el "prclod")))  users))
+      )))
+
+
+
 (cl-defun keybase--json-find (obj path &key (error-if-missing t))
   (let ((curr obj))
     (loop for path-entry in path
@@ -225,9 +235,38 @@ finished."
               'button-function function
               'button-data data))
 
+(defun keybase--make-private-conversation-button (channel-name)
+  (let ((name (extract-unique-username channel-name)))
+    (propertize name
+                'font-lock-face 'link
+                'mouse-face 'highlight
+                'help-echo (format "mouse-2: open channel buffer")
+                'keybase-user-name name
+                'keymap keybase-private-conversation-link-keymap)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Channel tools
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun keybase--private-conversation-channel-name (user)
+  (list "impteamnative" (if (string< my-keybase-username user)
+                            (format "%s,%s" my-keybase-username user)
+                          (format "%s,%s" user my-keybase-username))
+        nil))
+
+
+(defun keybase-open-selected-private-conversation ()
+  (interactive)
+  (when-let ((user-name (get-char-property (point) 'keybase-user-name)))
+    (print user-name)
+    (keybase-join-channel (keybase--private-conversation-channel-name user-name))))
+
+(defvar keybase-private-conversation-link-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-2] `keybase-open-selected-private-conversation)
+    (define-key map (kbd "RET") `keybase-open-selected-private-conversation)
+    map))
+
 
 (defvar keybase-channel-link-keymap
   (let ((map (make-sparse-keymap)))
@@ -269,12 +308,7 @@ finished."
              (list 'mouse-face 'highlight)
            nil)))
 
-(defun keybase--private-conversation-channel-name (user)
-  (let ((current-name (with-current-buffer keybase--proc-buf keybase--username)))
-    (list "impteamnative" (if (string< current-name user)
-                              (format "%s,%s" current-name user)
-                            (format "%s,%s" user current-name))
-          nil)))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Channel mode
@@ -1035,7 +1069,9 @@ once it is received from the server."
   (loop for (channel-name unread) in channels
         when (equal (first channel-name) "impteamnative")
         do (progn
-             (insert (second channel-name))
+             (insert "    ")
+             (message (format "%s" (extract-unique-username (second channel-name))))
+             (insert (keybase--make-private-conversation-button (second channel-name)))
              (insert "\n"))))
 
 (defun keybase-conversations-refresh ()
