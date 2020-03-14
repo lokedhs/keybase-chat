@@ -99,12 +99,22 @@ not been confirmed from the server yet.")
 ;;; Utilities
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; construct appropriate conversation name from channel-info as 3-tuple (see
+;; keybase--list-channels)
+(defun conversation-name-from-channel-info (channel-info)
+  (let ((info (first channel-info)))
+      (if (string-equal (first info)  "impteamnative")
+          (extract-unique-username (second info))
+        (format "%s: %s" (second info) (third info) ))))
 
+
+;; extract non-self username
 (defun extract-unique-username (channel-name)
   (let ((users (split-string channel-name ",")))
     (if (= (length users) 1)
         (first users)
-      (first (seq-filter (lambda (el) (not (string-equal el "prclod")))  users))
+      (first (seq-filter (lambda (el) (not (string-equal el my-keybase-username)
+                                           ))  users))
       )))
 
 
@@ -1025,6 +1035,7 @@ once it is received from the server."
 (defvar keybase-conversations-list-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "g") 'keybase-conversations-refresh)
+    (define-key map (kbd "q") 'quit-window)
     map))
 
 (define-derived-mode keybase-conversations-list-mode fundamental-mode "Keybase conversations"
@@ -1103,7 +1114,8 @@ once it is received from the server."
 (defun keybase-list-conversations ()
   (interactive)
   (let ((buffer (get-buffer "*keybase conversations*")))
-    (when (and buffer (not (eq (with-current-buffer buffer major-mode) 'keybase-conversations-list-mode)))
+    (when (and buffer
+               (not (eq (with-current-buffer buffer major-mode) 'keybase-conversations-list-mode)))
       (error "Conversation lists buffer already exists but has the wrong mode"))
     (unless buffer
       (setq buffer (get-buffer-create "*keybase conversations*")))
@@ -1232,18 +1244,32 @@ once it is received from the server."
 ;;;;;
 ;; interactive functions
 ;;;;;
+
+;; jump to chat from minibuffer
 (defun keybase-open-chat ()
   (interactive)
-  (let ((selected-user (completing-read "Jump to chat with: "
-                                        (let ((names (delete-dups (seq-map (lambda (el)
-                                                                             (if (> 2 (length (first el)))
-                                                                                 (third (first el))
-                                                                               (extract-unique-username (second (first el)))))
-                                                                           (keybase--list-channels)))))
-                                          (zip names names))
-                                        nil
-                                        nil
-                                        nil)))
-    (keybase-create-private-converstion selected-user)))
+  (let*
+      (
+       (seq-names (seq-map
+                   'conversation-name-from-channel-info
+                   (keybase--list-channels)))
+       (name2channel-info (zip seq-names (keybase--list-channels)))
+       (names (delete-dups
+               (seq-sort
+                'string< (seq-map
+                          'conversation-name-from-channel-info
+                          (keybase--list-channels)))))
+       (selected-channel (completing-read "Jump to chat with: "
+                                          (zip names names)
+                                          nil
+                                          nil
+                                          nil))
+       (selected-channel-info (cadr (assoc selected-channel name2channel-info)))
+       )
+    (if (string-equal "team" (first selected-channel-info))
+        (keybase-join-channel selected-channel-info)
+      (keybase-create-private-converstion selected-channel))
+    )
+  )
 
 (provide 'keybase)
