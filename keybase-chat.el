@@ -485,6 +485,10 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
   (let ((time (seconds-to-time (/ timestamp 1000))))
     (format-time-string "%Y-%m-%d %H:%M:%S" time)))
 
+(defun keybase--format-date-no-year (timestamp)
+    (let ((time (seconds-to-time (/ timestamp 1000))))
+      (format-time-string "%m-%d %H:%M:%S" time)))
+
 (defun keybase--format-simple-date (timestamp)
   (let ((time (seconds-to-time (/ timestamp 1000))))
     (format-time-string "%H:%M" time)))
@@ -514,7 +518,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 (defun keybase-default-attribution (sender timestamp)
   (format "[%s] %s "
           (keybase--make-clickable-username sender :highlight nil)
-          (keybase--format-simple-date timestamp)))
+          (keybase--format-date-no-year timestamp)))
 
 (defvar keybase--first-paragraph nil)
 
@@ -887,11 +891,11 @@ once it is received from the server."
             for nl = (search-forward-regexp "\n" nil t)
             while nl
             do (let ((content (buffer-substring pos nl)))
-		 (condition-case err
-		     (progn
-		       (keybase--handle-incoming-chat-message (json-read-from-string content))
-		       (setq pos nl))
-		   (json-readtable-error
+     (condition-case err
+         (progn
+           (keybase--handle-incoming-chat-message (json-read-from-string content))
+           (setq pos nl))
+       (json-readtable-error
                     (message "ate bad json: %S" content)
                     (setq pos nl)))))
       (delete-region (point-min) (point)))))
