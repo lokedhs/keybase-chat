@@ -642,6 +642,7 @@ once it is received from the server."
     (let ((start (point)))
       (insert (propertize (funcall keybase-attribution sender timestamp)
                           'face 'keybase-message-from))
+      (insert "\n")
       (let ((text-start (point)))
         (when (> (length message) 0)
           (keybase--insert-markup-string message)
@@ -1228,5 +1229,21 @@ once it is received from the server."
     (with-current-buffer buffer
       (keybase--start-load-user-info user))
     (pop-to-buffer buffer)))
+;;;;;
+;; interactive functions
+;;;;;
+(defun keybase-open-chat ()
+  (interactive)
+  (let ((selected-user (completing-read "Jump to chat with: "
+                                        (let ((names (delete-dups (seq-map (lambda (el)
+                                                                             (if (> 2 (length (first el)))
+                                                                                 (third (first el))
+                                                                               (extract-unique-username (second (first el)))))
+                                                                           (keybase--list-channels)))))
+                                          (zip names names))
+                                        nil
+                                        nil
+                                        nil)))
+    (keybase-create-private-converstion selected-user)))
 
 (provide 'keybase)
