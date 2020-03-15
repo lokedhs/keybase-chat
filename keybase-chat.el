@@ -1082,7 +1082,6 @@ once it is received from the server."
         when (equal (first channel-name) "impteamnative")
         do (progn
              (insert "    ")
-             (message (format "%s" (extract-unique-username (second channel-name))))
              (insert (keybase--make-private-conversation-button (second channel-name)))
              (insert "\n"))))
 
@@ -1108,8 +1107,11 @@ once it is received from the server."
                                                 (team-list (make-hash-table :test 'equal))
                                                 (private-list (make-hash-table :test 'equal)))
                                             (keybase--render-team-list channels)
-                                            (keybase--render-private-list channels)))))
-                                    :buffer (current-buffer))))))
+                                            (keybase--render-private-list channels)))
+                                        (goto-char (point-min))
+                                        ))
+                                    :buffer (current-buffer))))
+    ))
 
 (defun keybase-list-conversations ()
   (interactive)
