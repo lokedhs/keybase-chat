@@ -49,14 +49,15 @@ the epoch and the sender's keybase name."
 (defface keybase-message-text-content-italics
   '((t
      :slant italic
-     :foreground "#00ff00"
      :inherit keybase-default))
   "Face used to display italics text."
   :group 'keybase)
 
 (defface keybase-message-text-content-code
   '((((class color))
-     :background "#f0f0f0"
+     :background "#FAF2ED"
+     :foreground "#3663EA"
+     :family "Input Mono"
      :inherit keybase-default)
     (t
      :inherit keybase-default))
