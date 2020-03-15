@@ -789,10 +789,10 @@ once it is received from the server."
             (let ((inhibit-read-only t))
               (delete-region old-message-start old-message-end))
             ;; An UPDATE message contains the same fields as a TEXT message.
-            (let ((message (keybase--json-find json '(content edit body)))
+            (let ((msg (keybase--json-find json '(content edit body)))
                   (sender (keybase--json-find json '(sender username))))
               (goto-char old-message-start)
-              (keybase--insert-message-content msg old-timestamp sender message nil))))))))
+              (keybase--insert-message-content msg old-timestamp sender msg nil))))))))
 
 (defvar *keybase--attachment-type-none* 0)
 (defvar *keybase--attachment-type-image* 1)
