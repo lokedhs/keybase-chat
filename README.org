@@ -1,6 +1,5 @@
 #+BIND: org-export-use-babel nil
 #+TITLE: README
-#+AUTHOR: Paul Lodder
 
 
 * Getting started
