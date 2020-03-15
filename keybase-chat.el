@@ -721,6 +721,28 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
                                map))
 
 
+;; jump to referred-message at point (e.g. in a reply)
+(defun keybase-jump-to-referred-message ()
+  (interactive)
+  (let ((msgid (get-char-property (point) 'referred-msgid)))
+    (unless msgid
+      (error "No message referred to at point"))
+    (unless keybase--channel-info
+      (error "No channel info available in this buffer"))
+    (let ((posns (keybase--find-message-in-log msgid)))
+      (if (null posns)
+          (error "Could not find original message within log")
+        (goto-char (first (keybase--find-message-in-log msgid)))
+    )
+      )))
+
+;; keymap that allows jumping to message that is referrred to at point
+(defvar keybase-jump-to-referred-message-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-2] 'keybase-jump-to-referred-message)
+    (define-key map (kbd "RET") 'keybase-jump-to-referred-message)
+    map))
+
 ;; insert message belonging to msgid in reply format
 (defun keybase--insert-message-reply-format (msgid)
   (let* ((messages-json (keybase--json-find (keybase--request-chat-api
@@ -751,6 +773,8 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     (insert (propertize (string-join (list "| " (format "[%s] %s"
                                             sender (keybase--format-date-no-year timestamp)) "\n| " (replace-in-string "\n" "\n| "
                                                                                                                        msg)))
+                        'referred-msgid msgid
+                        'keymap keybase-jump-to-referred-message-keymap) ) )
   )
 
 (defun keybase--insert-message-content (id timestamp sender msg file &optional msgid-reply-to)
