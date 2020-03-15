@@ -280,7 +280,6 @@ finished."
 (defun keybase-open-selected-private-conversation ()
   (interactive)
   (when-let ((user-name (get-char-property (point) 'keybase-user-name)))
-    (print user-name)
     (keybase-join-channel (keybase--private-conversation-channel-name user-name))))
 
 (defvar keybase-private-conversation-link-keymap
@@ -344,6 +343,27 @@ Each entry is of the form (CHANNEL-INFO . BUFFER)")
   "List of channels.
 Each entry is of the form (CHANNEL-INFO UNREAD")
 
+
+(defun keybase-reply-to-message ()
+  (interactive)
+  (let ((reply-to-msgid (keybase--find-message-at-point (point)))
+        (sender (get-char-property (point) 'keybase-sender)))
+    (if reply-to-msgid
+        ;; (print reply-to-msgid)
+        (let*
+            ((new-message (read-from-minibuffer "Reply: " )))
+          (if (yes-or-no-p (format "Really reply with '%s'? " new-message))
+              (keybase--request-api-async keybase--program
+                                          (list "chat" "api")
+                                          `((method . "send")
+                                            (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                                   ("message" . ((body . ,new-message)))
+                                                                   (reply_to . ,reply-to-msgid))))))
+                                          (lambda (json)
+                                            nil))))
+      ;; ELSE: No message at point
+      (message "No message at point"))))
+
 (defvar keybase-channel-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<S-return>") 'keybase-insert-nl)
@@ -352,6 +372,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     (define-key map (kbd "C-c C-d") 'keybase-delete-message)
     (define-key map (kbd "C-c C-e") 'keybase-edit-message)
     (define-key map (kbd "C-c C-a") 'keybase-send-file)
+    (define-key map (kbd "C-c C-r") 'keybase-reply-to-message)
     (define-key map [menu-bar keybase] (cons "Keybase" (make-sparse-keymap "Keybase")))
     (define-key map [menu-bar keybase join-channel] '("Join channel" . keybase-join-channel))
     (define-key map [menu-bar keybase create-private-conversation] '("Private conversation" . keybase-create-private-converstion))
