@@ -339,6 +339,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     (define-key map (kbd "RET") 'keybase-send-input-line)
     ;;(define-key map (kbd "@") 'keybase-insert-user)
     (define-key map (kbd "C-c C-d") 'keybase-delete-message)
+    (define-key map (kbd "C-c C-e") 'keybase-edit-message)
     (define-key map [menu-bar keybase] (cons "Keybase" (make-sparse-keymap "Keybase")))
     (define-key map [menu-bar keybase join-channel] '("Join channel" . keybase-join-channel))
     (define-key map [menu-bar keybase create-private-conversation] '("Private conversation" . keybase-create-private-converstion))
@@ -611,6 +612,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 
 (defun keybase--insert-markup-inner (content)
   (loop for v in content
+
         do (keybase--render-markup-element v)))
 
 (defun keybase--parse-user (string fn)
@@ -737,10 +739,38 @@ once it is received from the server."
       (let ((inhibit-read-only t))
         (delete-region (first old-message-pos) (second old-message-pos))))))
 
+
 (defun keybase--handle-delete (json)
   (let ((message-list (keybase--json-find json '(content delete messageIDs))))
     (loop for id across message-list
           do (keybase--delete-message id))))
+
+(defun keybase-edit-message ()
+  (interactive)
+  (let ((msgid (keybase--find-message-at-point (point)))
+        (sender (get-char-property (point) 'keybase-sender)))
+
+    (cond ((null msgid)  (error "No message at point"))
+          ((not (string-equal sender my-keybase-username))  (error "You cannot edit messages that aren't yours"))
+          (t
+           (let*
+            ((current-message-json (keybase--request-chat-api `((method . "get")
+                                                                (params .
+                                                                        ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                                                     (message_ids . ,(list msgid))
+                                                                                     )))))))
+             (current-message (keybase--json-find  (first (first (append  (keybase--json-find current-message-json `(result messages)) nil))) '(content text body)))
+             (new-message (read-from-minibuffer "Edit text: " current-message))
+             )
+          (when (yes-or-no-p (format "Really change to '%s'? " new-message))
+            (keybase--request-chat-api `((method . "edit")
+                                         (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                                (message_id . ,msgid)
+                                                                ("message" . ((body . ,new-message)))))))))))
+           )
+          )
+    )
+  )
 
 (defun keybase--handle-edit (json)
   (let* ((old-msgid (keybase--json-find json '(content edit messageID)))
