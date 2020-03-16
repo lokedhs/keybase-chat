@@ -1,6 +1,7 @@
 ;;; keybase-chat --- Keybase chat implementation in Emacs -*- lexical-binding: t -*-
 
 (require 'url)
+(require 'json)
 (require 'subr-x)
 (require 'notifications)
 (require 'cl)
