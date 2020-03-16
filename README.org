@@ -13,7 +13,7 @@ Make sure variable =my-keybase-username= holds your keybase username:
 
 - =keybase-open-chat= to select a chat to open
 
-- =C-x C-d= to delete message at point
-- =C-x C-e= to edit message at point
-- =C-x C-r= to reply to message at point
-- =C-x C-a= to select a file to send as an attachment
+- =C-c C-d= to delete message at point
+- =C-c C-e= to edit message at point
+- =C-c C-r= to reply to message at point
+- =C-c C-a= to select a file to send as an attachment
