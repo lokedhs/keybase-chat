@@ -1110,14 +1110,13 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
         (when buffer
           (with-current-buffer buffer
             (let ((type (keybase--json-find msg '(content type))))
-              (cond ((equal type "text")
+              (cond ((or (equal type "text") (equal type "attachment"))
                      (keybase--handle-post-message msg))
                     ((equal type "delete")
                      (keybase--handle-delete msg))
                     ((equal type "edit")
                      (keybase--handle-edit msg))
-                    ((equal type "attachment")
-                     (keybase--handle-image-message msg))))))
+                     )))))
         ;; We need to check mentions for all channels, not just the ones the user have opened
         (let ((at-mention-usernames (keybase--json-find msg '(at_mention_usernames) :error-if-missing nil))
               (username (with-current-buffer keybase--proc-buf keybase--username)))
