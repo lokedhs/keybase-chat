@@ -1123,7 +1123,8 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           (when (loop for v across at-mention-usernames
                       when (equal v username)
                       return t)
-            (message "mention in channel: %S" channel-info)))))))
+            ;; (message "mention in channel: %S" channel-info)
+            )))))
 
 (defun keybase--request-api (command command-args arg)
   (let ((output-buf (generate-new-buffer " *keybase api*")))
@@ -1573,4 +1574,4 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     )
   )
 
-(provide 'keybase)
+(provide 'keybase-chat)
