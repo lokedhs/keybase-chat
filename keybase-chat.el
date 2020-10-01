@@ -81,6 +81,15 @@ not been confirmed from the server yet.")
   "Face used to display the 'from' part of a message."
   :group 'keybase)
 
+(defface keybase-reply
+  '((((class color))
+     ;; :foreground "#00b000"
+     :inherit keybase-default)
+    (t
+     :inherit keybase-default))
+  "Face used to display the 'from' part of a message."
+  :group 'keybase)
+
 (defface keybase-channel-summary-title
   '((t
      :weight bold
@@ -487,8 +496,9 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           for timestamp = (keybase--json-find msg '(sent_at_ms))
           for content = (keybase--json-find msg '(content))
           for type = (keybase--json-find content '(type))
+          for reply-to-msgid = (keybase--json-find content '(text replyTo) :error-if-missing nil)
           when (equal type "text")
-          do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body)) nil))))
+          do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body)) nil reply-to-msgid))))
 
 (defun keybase--format-date (timestamp)
   (let ((time (seconds-to-time (/ timestamp 1000))))
@@ -567,7 +577,9 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
                (insert (propertize (third element) 'face 'keybase-message-text-content-code))
                (insert "\n"))
               (:user
-               (insert (keybase--make-clickable-username (cdr element) :include-prefix t :highlight t))))))))
+               (insert (keybase--make-clickable-username (cdr element) :include-prefix t :highlight t)))
+              (:reply
+               (insert ("| ") )))))))
 
 (defun keybase--insert-markup-inner (content)
   (loop for v in content
@@ -603,7 +615,29 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 (defun keybase--make-in-progress-id ()
   (format "temp-%d" (incf keybase--current-id)))
 
-(defun keybase--insert-message-content (id timestamp sender message image)
+(defun keybase--insert-reply (msgid)
+  "inserts message corresponding to message id in reply format"
+  (let ((msg-json (aref
+                   (keybase--json-find
+                    (keybase--request-chat-api `((method .  "get")
+                                                 (params .  ((options .
+                                                                      ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                                       (message_ids .  ,(list msgid))))))))
+                    '(result messages))
+                   0)))
+    (keybase--with-json-bind ((msg (msg content text body))
+                              (id  (msg id))
+                              (sender (msg sender username))
+                              (timestamp (msg sent_at_ms)))
+        msg-json
+      (insert (propertize (string-join (list "\n| "
+                                             (funcall keybase-attribution sender timestamp)
+                                         "\n| "
+                                         (replace-in-string "\n" "\n| " msg)))
+                          'face 'keybase-reply)))))
+
+
+(defun keybase--insert-message-content (id timestamp sender message image &optional reply-to-msgid)
   "Insert message content at the current cursor position.
 ID may be nil, in which case this message represents an
 in-progress message which is inserted while a new message is
@@ -612,11 +646,14 @@ once it is received from the server."
   (let ((inhibit-read-only t)
         (start (point)))
     (insert (propertize (funcall keybase-attribution sender timestamp)
-                          'face 'keybase-message-from))
-      (let ((text-start (point)))
-        (when (> (length message) 0)
-          (keybase--insert-markup-string message)
-          (insert "\n"))
+                        'face 'keybase-message-from))
+    (let ((text-start (point)))
+      (when reply-to-msgid
+        (keybase--insert-reply reply-to-msgid))
+      (when (> (length message) 0)
+        (insert "\n")
+        (keybase--insert-markup-string message)
+        (insert "\n"))
         (when image
           (destructuring-bind (image-title image-filename)
               image
@@ -635,7 +672,7 @@ once it is received from the server."
                                                  'face 'keybase-message-text-content-in-progress)
                                          (list 'keybase-remote-message-id id))))))))
 
-(defun keybase--insert-message (id timestamp sender message image)
+(defun keybase--insert-message (id timestamp sender message image &optional reply-to-msgid)
   (save-excursion
     (goto-char keybase--output-marker)
     (let ((new-pos (loop with prev-pos = (point)
@@ -648,7 +685,7 @@ once it is received from the server."
                          do (setq prev-pos pos)
                          finally (return prev-pos))))
       (goto-char new-pos)
-      (keybase--insert-message-content id timestamp sender message image))))
+      (keybase--insert-message-content id timestamp sender message image reply-to-msgid))))
 
 (defun keybase--find-message-in-log (id)
   (loop with curr = (point-min)
@@ -667,7 +704,8 @@ once it is received from the server."
   (let ((id        (keybase--json-find json '(id)))
         (message   (keybase--json-find json '(content text body)))
         (sender    (keybase--json-find json '(sender username)))
-        (timestamp (keybase--json-find json '(sent_at_ms))))
+        (timestamp (keybase--json-find json '(sent_at_ms)))
+        (reply-to-msgid (keybase--json-find json '(content text replyTo) :error-if-missing nil)))
     ;; If this message is sent by us, we need to check if there is an
     ;; in-progress message inserted in the buffer. If so, it beeds to
     ;; be removed before the real one is sent.
@@ -683,7 +721,7 @@ once it is received from the server."
                    (delete-region pos end)
                    (return nil))
               do (setq curr pos))))
-    (keybase--insert-message id timestamp sender message nil)
+    (keybase--insert-message id timestamp sender message nil reply-to-msgid)
     (let ((old keybase--unread-in-channel))
       (incf keybase--unread-in-channel)
       (when (zerop old)
@@ -719,9 +757,10 @@ once it is received from the server."
               (delete-region old-message-start old-message-end))
             ;; An UPDATE message contains the same fields as a TEXT message.
             (let ((message (keybase--json-find json '(content edit body)))
-                  (sender (keybase--json-find json '(sender username))))
+                  (sender (keybase--json-find json '(sender username)))
+                  (reply-to-msgid (keybase--json-find json '(content text replyTo) :error-if-missing nil)))
               (goto-char old-message-start)
-              (keybase--insert-message-content msg old-timestamp sender message nil))))))))
+              (keybase--insert-message-content msg old-timestamp sender message nil reply-to-msgid))))))))
 
 (defvar *keybase--attachment-type-none* 0)
 (defvar *keybase--attachment-type-image* 1)
@@ -1112,7 +1151,7 @@ once it is received from the server."
                    msg
                  (when (eql message-type 1)
                    (let ((text (keybase--json-find msg '(valid messageBody text body))))
-                     (keybase--insert-message-content message-id ctime sender-username text nil))))))))
+                     (keybase--insert-message-content message-id ctime sender-username text nil replyTo))))))))
 
 (defun keybase--make-search-buffer ()
   (let ((buffer-name "*keybase search*"))
