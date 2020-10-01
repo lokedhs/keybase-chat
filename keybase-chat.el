@@ -609,9 +609,9 @@ ID may be nil, in which case this message represents an
 in-progress message which is inserted while a new message is
 being inserted. It will later be replaced with the real content
 once it is received from the server."
-  (let ((inhibit-read-only t))
-    (let ((start (point)))
-      (insert (propertize (funcall keybase-attribution sender timestamp)
+  (let ((inhibit-read-only t)
+        (start (point)))
+    (insert (propertize (funcall keybase-attribution sender timestamp)
                           'face 'keybase-message-from))
       (let ((text-start (point)))
         (when (> (length message) 0)
@@ -633,7 +633,7 @@ once it is received from the server."
                                            (list 'keybase-in-progress gen-id
                                                  'keybase-content message
                                                  'face 'keybase-message-text-content-in-progress)
-                                         (list 'keybase-remote-message-id id)))))))))
+                                         (list 'keybase-remote-message-id id))))))))
 
 (defun keybase--insert-message (id timestamp sender message image)
   (save-excursion
