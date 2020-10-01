@@ -294,12 +294,21 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     (define-key map (kbd "RET") 'keybase-send-input-line)
     ;;(define-key map (kbd "@") 'keybase-insert-user)
     (define-key map (kbd "C-c C-d") 'keybase-delete-message)
+    (define-key map (kbd "C-c C-r") 'keybase-reply-to-message)
     (define-key map [menu-bar keybase] (cons "Keybase" (make-sparse-keymap "Keybase")))
     (define-key map [menu-bar keybase join-channel] '("Join channel" . keybase-join-channel))
     (define-key map [menu-bar keybase create-private-conversation] '("Private conversation" . keybase-create-private-converstion))
     (define-key map [menu-bar keybase show-user-info] '("User info" . keybase-user-info))
     (define-key map [menu-bar keybase delete-message] '("Delete message" . keybase-delete-message))
     map))
+
+(defun keybase-reply-to-message ()
+  (interactive)
+  (let ((reply-to-msgid (keybase--find-message-at-point (point)))
+        (sender (get-char-property (point) 'keybase-sender)))
+    (if reply-to-msgid
+        (keybase--input (read-from-minibuffer "Reply: " ) reply-to-msgid)
+      (message "No message at point"))))
 
 (defun keybase--load-more-messages-handler (data)
   (keybase-load-messages))
@@ -843,7 +852,7 @@ once it is received from the server."
       (setq keybase--channels channels)
       channels)))
 
-(defun keybase--input (str)
+(defun keybase--input (str &optional reply-to-msgid)
   (unless keybase--channel-info
     (error "No channel info available in this buffer"))
   (save-excursion
@@ -853,13 +862,21 @@ once it is received from the server."
                                      (with-current-buffer keybase--proc-buf keybase--username)
                                      str
                                      nil))
-  (keybase--request-api-async keybase--program
+  (if reply-to-msgid (keybase--request-api-async keybase--program
+                              (list "chat" "api")
+                              `((method . "send")
+                                (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                       (message . ((body . ,str)))
+                                                       (reply_to . ,reply-to-msgid))))))
+                              (lambda (json)
+                                nil))
+    (keybase--request-api-async keybase--program
                               (list "chat" "api")
                               `((method . "send")
                                 (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
                                                        (message . ((body . ,str))))))))
                               (lambda (json)
-                                nil)))
+                                nil))))
 
 (defun keybase-send-input-line ()
   "Send the currently typed line to the server."
@@ -887,11 +904,11 @@ once it is received from the server."
             for nl = (search-forward-regexp "\n" nil t)
             while nl
             do (let ((content (buffer-substring pos nl)))
-		 (condition-case err
-		     (progn
-		       (keybase--handle-incoming-chat-message (json-read-from-string content))
-		       (setq pos nl))
-		   (json-readtable-error
+     (condition-case err
+         (progn
+           (keybase--handle-incoming-chat-message (json-read-from-string content))
+           (setq pos nl))
+       (json-readtable-error
                     (message "ate bad json: %S" content)
                     (setq pos nl)))))
       (delete-region (point-min) (point)))))
