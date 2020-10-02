@@ -313,8 +313,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 
 (defun keybase-reply-to-message ()
   (interactive)
-  (let ((reply-to-msgid (keybase--find-message-at-point (point)))
-        (sender (get-char-property (point) 'keybase-sender)))
+  (let ((reply-to-msgid (keybase--find-message-at-point (point))))
     (if reply-to-msgid
         (keybase--input (read-from-minibuffer "Reply: " ) reply-to-msgid)
       (message "No message at point"))))
@@ -577,9 +576,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
                (insert (propertize (third element) 'face 'keybase-message-text-content-code))
                (insert "\n"))
               (:user
-               (insert (keybase--make-clickable-username (cdr element) :include-prefix t :highlight t)))
-              (:reply
-               (insert ("| ") )))))))
+               (insert (keybase--make-clickable-username (cdr element) :include-prefix t :highlight t))))))))
 
 (defun keybase--insert-markup-inner (content)
   (loop for v in content
@@ -943,11 +940,11 @@ once it is received from the server."
             for nl = (search-forward-regexp "\n" nil t)
             while nl
             do (let ((content (buffer-substring pos nl)))
-     (condition-case err
-         (progn
-           (keybase--handle-incoming-chat-message (json-read-from-string content))
-           (setq pos nl))
-       (json-readtable-error
+                 (condition-case err
+                     (progn
+                       (keybase--handle-incoming-chat-message (json-read-from-string content))
+                       (setq pos nl))
+                   (json-readtable-error
                     (message "ate bad json: %S" content)
                     (setq pos nl)))))
       (delete-region (point-min) (point)))))
