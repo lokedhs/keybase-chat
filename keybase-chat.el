@@ -234,6 +234,15 @@ finished."
               'button-function function
               'button-data data))
 
+(defun keybase--get-message (msgid)
+  "get message corresponding to msgid in context of current channel"
+  (let ((response (keybase--request-chat-api `((method . "get")
+                                               (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                                      (message_ids . ,(list msgid))))))))))
+    (seq-first (keybase--json-find response
+                                   '(result messages)))))
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Channel tools
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -304,6 +313,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     ;;(define-key map (kbd "@") 'keybase-insert-user)
     (define-key map (kbd "C-c C-d") 'keybase-delete-message)
     (define-key map (kbd "C-c C-r") 'keybase-reply-to-message)
+    (define-key map (kbd "C-c C-e") 'keybase-edit-message)
     (define-key map [menu-bar keybase] (cons "Keybase" (make-sparse-keymap "Keybase")))
     (define-key map [menu-bar keybase join-channel] '("Join channel" . keybase-join-channel))
     (define-key map [menu-bar keybase create-private-conversation] '("Private conversation" . keybase-create-private-converstion))
@@ -317,6 +327,31 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     (if reply-to-msgid
         (keybase--input (read-from-minibuffer "Reply: " ) reply-to-msgid)
       (message "No message at point"))))
+
+(defun keybase--edit-message (msgid new-message)
+  "given msgid and new-content, sends api call to edit the message accordingly"
+  (keybase--request-chat-api `((method . "edit")
+                               (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                      (message_id . ,msgid)
+                                                      ("message" . ((body . ,new-message))))))))))
+
+(defun keybase-edit-message ()
+  (interactive)
+  (let ((msgid (keybase--find-message-at-point (point)))
+        (sender (get-char-property (point)
+                                   'keybase-sender)))
+    (cond
+     ((null msgid)
+      (error "No message at point"))
+     ((not (string-equal sender (with-current-buffer keybase--proc-buf keybase--username)))
+      (error "You cannot edit messages that aren't yours"))
+     (t (let* ((current-message (keybase--json-find (keybase--get-message msgid)
+                                                    '(msg content text body)))
+               (new-message (read-from-minibuffer "Edit text: " current-message)))
+          (when (yes-or-no-p (format "Really change to '%s'? " new-message))
+            (keybase--edit-message msgid new-message)))))))
+
+
 
 (defun keybase--load-more-messages-handler (data)
   (keybase-load-messages))
@@ -661,6 +696,7 @@ once it is received from the server."
                                (append (list 'read-only t
                                              'keybase-message-id gen-id
                                              'keybase-timestamp timestamp
+                                             'keybase-reply-to-msgid reply-to-msgid
                                              'keybase-sender sender
                                              'front-sticky '(read-only))
                                        (if (null id)
@@ -747,17 +783,17 @@ once it is received from the server."
           old-message-pos
         (save-excursion
           (let* ((msg old-message-start)
-                 (old-timestamp (get-char-property msg 'keybase-timestamp)))
+                 (old-timestamp (get-char-property msg 'keybase-timestamp))
+                 (reply-to-msgid (get-char-property msg 'keybase-reply-to-msgid)))
             (unless old-timestamp
               (error "no timestamp for previous message"))
             (let ((inhibit-read-only t))
               (delete-region old-message-start old-message-end))
             ;; An UPDATE message contains the same fields as a TEXT message.
             (let ((message (keybase--json-find json '(content edit body)))
-                  (sender (keybase--json-find json '(sender username)))
-                  (reply-to-msgid (keybase--json-find json '(content text replyTo) :error-if-missing nil)))
+                  (sender (keybase--json-find json '(sender username))))
               (goto-char old-message-start)
-              (keybase--insert-message-content msg old-timestamp sender message nil reply-to-msgid))))))))
+              (keybase--insert-message-content old-msgid old-timestamp sender message nil reply-to-msgid))))))))
 
 (defvar *keybase--attachment-type-none* 0)
 (defvar *keybase--attachment-type-image* 1)
