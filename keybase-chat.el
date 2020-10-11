@@ -25,8 +25,8 @@ the epoch and the sender's keybase name."
   :type 'function
   :group 'keybase)
 
-(defcustom keybase--dateformat "%H:%M"
-  "The name of the keybase binary"
+(defcustom keybase--datetime-format "%H:%M:%S"
+  "The datetime format used to convert timestamps"
   :type 'string
   :group 'keybase)
 
@@ -544,7 +544,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 
 (defun keybase--format-custom-date (timestamp)
   (let ((time (seconds-to-time (/ timestamp 1000))))
-    (format-time-string keybase--dateformat time)))
+    (format-time-string keybase--datetime-format time)))
 
 (defun keybase--recompute-modeline ()
   (setq keybase-display-notifications-string (keybase--make-unread-notification-string))
