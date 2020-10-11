@@ -11,6 +11,8 @@
   :prefix 'keybase
   :group 'applications)
 
+
+
 (defcustom keybase--program "keybase"
   "The name of the keybase binary"
   :type 'string
@@ -21,6 +23,11 @@
 It will be given two arguments, the timestamp of the message in seconds since
 the epoch and the sender's keybase name."
   :type 'function
+  :group 'keybase)
+
+(defcustom keybase--dateformat "%H:%M"
+  "The name of the keybase binary"
+  :type 'string
   :group 'keybase)
 
 (defcustom keybase-channel-mode-hook nil
@@ -534,13 +541,10 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           when (equal type "text")
           do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body)) nil reply-to-msgid))))
 
-(defun keybase--format-date (timestamp)
-  (let ((time (seconds-to-time (/ timestamp 1000))))
-    (format-time-string "%Y-%m-%d %H:%M:%S" time)))
 
-(defun keybase--format-simple-date (timestamp)
+(defun keybase--format-custom-date (timestamp)
   (let ((time (seconds-to-time (/ timestamp 1000))))
-    (format-time-string "%H:%M" time)))
+    (format-time-string keybase--dateformat time)))
 
 (defun keybase--recompute-modeline ()
   (setq keybase-display-notifications-string (keybase--make-unread-notification-string))
@@ -567,7 +571,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 (defun keybase-default-attribution (sender timestamp)
   (format "[%s] %s "
           (keybase--make-clickable-username sender :highlight nil)
-          (keybase--format-simple-date timestamp)))
+          (keybase--format-custom-date timestamp)))
 
 (defvar keybase--first-paragraph nil)
 
