@@ -321,6 +321,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
     (define-key map (kbd "C-c C-d") 'keybase-delete-message)
     (define-key map (kbd "C-c C-r") 'keybase-reply-to-message)
     (define-key map (kbd "C-c C-e") 'keybase-edit-message)
+    (define-key map (kbd "C-c C-a") 'keybase-send-file)
     (define-key map [menu-bar keybase] (cons "Keybase" (make-sparse-keymap "Keybase")))
     (define-key map [menu-bar keybase join-channel] '("Join channel" . keybase-join-channel))
     (define-key map [menu-bar keybase create-private-conversation] '("Private conversation" . keybase-create-private-converstion))
@@ -357,6 +358,30 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
                (new-message (read-from-minibuffer "Edit text: " current-message)))
           (when (yes-or-no-p (format "Really change to '%s'? " new-message))
             (keybase--edit-message msgid new-message)))))))
+
+(defun keybase--send-file (file-path title)
+  "sends given file with title"
+  (keybase--request-api-async keybase--program
+                              (list "chat" "api")
+                              `((method . "attach")
+                                (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                       (filename . ,file-path)
+                                                       (title . ,title))))))
+                              (lambda (json)
+                                nil)))
+
+(defun keybase-send-file ()
+  (interactive)
+  (let* ((file-path (read-file-name "Choose file to send: "))
+         (default-title (first (last (split-string file-path "/"))))
+         (title (read-from-minibuffer (format "Message along attachment (default %s): "
+                                              default-title)
+                                      nil
+                                      nil
+                                      nil
+                                      nil
+                                      default-title)))
+    (keybase--send-file file-path title)))
 
 
 
