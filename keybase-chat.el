@@ -246,8 +246,9 @@ finished."
   (let ((response (keybase--request-chat-api `((method . "get")
                                                (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
                                                                       (message_ids . ,(list msgid))))))))))
-    (seq-first (keybase--json-find response
-                                   '(result messages)))))
+    (seq-elt (keybase--json-find response
+                                 '(result messages))
+             0)))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
