@@ -28,7 +28,7 @@ the epoch and the sender's keybase name."
   :type 'function
   :group 'keybase)
 
-(defcustom keybase--datetime-format "%H:%M:%S"
+(defcustom keybase-datetime-format "%H:%M:%S"
   "The datetime format used to convert timestamps"
   :type 'string
   :group 'keybase)
@@ -644,7 +644,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 
 (defun keybase--format-custom-date (timestamp)
   (let ((time (seconds-to-time (/ timestamp 1000))))
-    (format-time-string keybase--datetime-format time)))
+    (format-time-string keybase-datetime-format time)))
 
 (defun keybase--recompute-modeline ()
   (setq keybase-display-notifications-string (keybase--make-unread-notification-string))
@@ -889,9 +889,9 @@ attachment and inserts reference to file"
 
 (defun keybase--handle-post-message (json)
   (let ((id        (keybase--json-find json '(id)))
-        (message   (keybase--json-find json '(content text body)))
         (sender    (keybase--json-find json '(sender username)))
         (timestamp (keybase--json-find json '(sent_at_ms)))
+        (msg   (keybase--json-find json '(content text body) :error-if-missing nil))
         (reply-to-msgid (keybase--json-find json '(content text replyTo) :error-if-missing nil))
         (attachment (keybase--json-find json '(content attachment) :error-if-missing nil)))
     ;; If this message is sent by us, we need to check if there is an
@@ -909,7 +909,7 @@ attachment and inserts reference to file"
                    (delete-region pos end)
                    (return nil))
               do (setq curr pos))))
-    (keybase--insert-message id timestamp sender message attachment reply-to-msgid)
+    (keybase--insert-message id timestamp sender msg attachment reply-to-msgid)
     (let ((old keybase--unread-in-channel))
       (incf keybase--unread-in-channel)
       (when (zerop old)
@@ -1072,45 +1072,9 @@ attachment and inserts reference to file"
     out-filepath
     ))
 
-(defun keybase--handle-attachment-message (json)
-  (let* ((message-id (keybase--json-find json
-                                         '(id)))
-         (sender (keybase--json-find json
-                                     '(sender username)))
-         (timestamp (keybase--json-find json
-                                        '(sent_at)))
-         (attachment (keybase--json-find json
-                                         '(content attachment))))
-    ;; (out-file (make-temp-file "emacs-keybase-"
-    ;;                           nil
-    ;;                           (format ".%s" filename)))
-    (progn
-      ;; (keybase--request-chat-api `((method . "download")
-      ;;                              (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-      ;;                                                     (message_id . ,message-id)
-      ;;                                                     (output . ,out-file)))))))
-      (keybase--insert-message message-id timestamp
-                               sender nil attachment))))
 
-(defun keybase--handle-image-message (json)
-  (let* ((id         (keybase--json-find json '(id)))
-         (sender     (keybase--json-find json '(sender username)))
-         (timestamp  (keybase--json-find json '(sent_at)))
-         (attachment (keybase--json-find json '(content attachment)))
-         (asset-type (keybase--json-find attachment '(object metadata assetType))))
-    (when (eql asset-type *keybase--attachment-type-image*)
-      (let* ((filename     (keybase--json-find attachment '(object filename)))
-             (content-type (keybase--json-find attachment '(object mimeType)))
-             (title        (keybase--json-find attachment '(object title)))
-             (file (make-temp-file "emacs-keybase" nil (format ".%s" (keybase--file-to-extension filename)))))
-        (unwind-protect
-            (progn
-              (keybase--request-chat-api `((method . "download")
-                                           (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                                  (message_id . ,id)
-                                                                  (output . ,file)))))))
-              (keybase--insert-message id timestamp sender "Uploaded file" (list title file)))
-          (delete-file file))))))
+
+
 
 (cl-defun keybase--handle-incoming-chat-message (json)
   ;; (setq check json)
@@ -1137,7 +1101,7 @@ attachment and inserts reference to file"
                       when (equal v username)
                       return t)
             ;; (message "mention in channel: %S" channel-info)
-            )))))
+            ))))))
 
 (defun keybase--request-api (command command-args arg)
   (let ((output-buf (generate-new-buffer " *keybase api*")))
