@@ -564,8 +564,9 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           for content = (keybase--json-find msg '(content))
           for type = (keybase--json-find content '(type))
           for reply-to-msgid = (keybase--json-find content '(text replyTo) :error-if-missing nil)
-          when (equal type "text")
-          do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body)) nil reply-to-msgid))))
+          for attachment = (keybase--json-find content '(attachment) :error-if-missing nil)
+          when (or (equal type "text") (equal type "attachment"))
+          do (keybase--insert-message id timestamp sender (keybase--json-find content '(text body) :error-if-missing nil) attachment reply-to-msgid))))
 
 
 (defun keybase--format-custom-date (timestamp)
@@ -699,16 +700,20 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
                           'face 'keybase-reply)))))
 
 
-(defun keybase--insert-message-content (id timestamp sender message image &optional reply-to-msgid)
+(defun keybase--insert-message-content (id timestamp sender message attachment &optional
+                                           reply-to-msgid)
   "Insert message content at the current cursor position.
 ID may be nil, in which case this message represents an
 in-progress message which is inserted while a new message is
 being inserted. It will later be replaced with the real content
 once it is received from the server."
+  (message "HERE")
+  ;; (message attachment)
   (let ((inhibit-read-only t)
         (start (point)))
     (insert (propertize (funcall keybase-attribution sender timestamp)
-                        'face 'keybase-message-from))
+                        'face
+                        'keybase-message-from))
     (let ((text-start (point)))
       (when reply-to-msgid
         (keybase--insert-reply reply-to-msgid))
@@ -716,26 +721,47 @@ once it is received from the server."
         (insert "\n")
         (keybase--insert-markup-string message)
         (insert "\n"))
-        (when image
-          (destructuring-bind (image-title image-filename)
-              image
-            (keybase--insert-image image-title image-filename)
-            (insert "\n\n")))
-        (let ((gen-id (or id (keybase--make-in-progress-id))))
-          (add-text-properties start (point)
-                               (append (list 'read-only t
-                                             'keybase-message-id gen-id
-                                             'keybase-timestamp timestamp
-                                             'keybase-reply-to-msgid reply-to-msgid
-                                             'keybase-sender sender
-                                             'front-sticky '(read-only))
-                                       (if (null id)
-                                           (list 'keybase-in-progress gen-id
-                                                 'keybase-content message
-                                                 'face 'keybase-message-text-content-in-progress)
-                                         (list 'keybase-remote-message-id id))))))))
+      (when attachment
+        (insert "\n")
+        (keybase--insert-markup-string (keybase--json-find attachment
+                                                           '(object title)))
+        (keybase--insert-attachment id attachment)
+        (insert "\n")
+        (insert "\n"))
+      (let ((gen-id (or id
+                        (keybase--make-in-progress-id))))
+        (add-text-properties start
+                             (point)
+                             (append (list 'read-only
+                                           t
+                                           'keybase-message-id
+                                           gen-id
+                                           'keybase-timestamp
+                                           timestamp
+                                           'keybase-reply-to-msgid
+                                           reply-to-msgid
+                                           'keybase-sender
+                                           sender
+                                           'front-sticky
+                                           '(read-only))
+                                     (if (null id)
+                                         (list 'keybase-in-progress gen-id 'keybase-content
+                                               message 'face 'keybase-message-text-content-in-progress)
+                                       (list 'keybase-remote-message-id id))))))))
 
-(defun keybase--insert-message (id timestamp sender message image &optional reply-to-msgid)
+
+(defun keybase--insert-attachment (msgid attachment)
+  "given attachment object and message id, downloads the
+attachment and inserts reference to file"
+  (let ((fpath (keybase--download-file msgid attachment))
+        (fname (keybase--json-find attachment
+                                   '(object filename))))
+    (insert (keybase--make-clickable-button fname 'find-file
+                                            fpath))))
+
+(defun keybase--insert-message (id timestamp sender message attachment &optional reply-to-msgid)
+  (message "here")
+  ;; (message attachment)
   (save-excursion
     (goto-char keybase--output-marker)
     (let ((new-pos (loop with prev-pos = (point)
@@ -748,7 +774,7 @@ once it is received from the server."
                          do (setq prev-pos pos)
                          finally (return prev-pos))))
       (goto-char new-pos)
-      (keybase--insert-message-content id timestamp sender message image reply-to-msgid))))
+      (keybase--insert-message-content id timestamp sender message attachment reply-to-msgid))))
 
 (defun keybase--find-message-in-log (id)
   (loop with curr = (point-min)
@@ -768,7 +794,8 @@ once it is received from the server."
         (message   (keybase--json-find json '(content text body)))
         (sender    (keybase--json-find json '(sender username)))
         (timestamp (keybase--json-find json '(sent_at_ms)))
-        (reply-to-msgid (keybase--json-find json '(content text replyTo) :error-if-missing nil)))
+        (reply-to-msgid (keybase--json-find json '(content text replyTo) :error-if-missing nil))
+        (attachment (keybase--json-find json '(content attachment) :error-if-missing nil)))
     ;; If this message is sent by us, we need to check if there is an
     ;; in-progress message inserted in the buffer. If so, it beeds to
     ;; be removed before the real one is sent.
@@ -784,7 +811,7 @@ once it is received from the server."
                    (delete-region pos end)
                    (return nil))
               do (setq curr pos))))
-    (keybase--insert-message id timestamp sender message nil reply-to-msgid)
+    (keybase--insert-message id timestamp sender message attachment reply-to-msgid)
     (let ((old keybase--unread-in-channel))
       (incf keybase--unread-in-channel)
       (when (zerop old)
@@ -803,7 +830,8 @@ once it is received from the server."
           do (keybase--delete-message id))))
 
 (defun keybase--handle-edit (json)
-  (let* ((old-msgid (keybase--json-find json '(content edit messageID)))
+  (let* ((old-msgid (keybase--json-find json
+                                        '(content edit messageID)))
          (old-message-pos (keybase--find-message-in-log old-msgid)))
     ;; If the message isn't already displayed, we don't need to do
     ;; anything (we don't want old messages added just because someone
@@ -820,10 +848,16 @@ once it is received from the server."
             (let ((inhibit-read-only t))
               (delete-region old-message-start old-message-end))
             ;; An UPDATE message contains the same fields as a TEXT message.
-            (let ((message (keybase--json-find json '(content edit body)))
-                  (sender (keybase--json-find json '(sender username))))
+            (let ((message (keybase--json-find json
+                                               '(content edit body)))
+                  (sender (keybase--json-find json
+                                              '(sender username)))
+                  (attachment (keybase--json-find json
+                                                  '(content attachment)
+                                                  :error-if-missing nil)))
               (goto-char old-message-start)
-              (keybase--insert-message-content old-msgid old-timestamp sender message nil reply-to-msgid))))))))
+              (keybase--insert-message-content old-msgid
+                                               old-timestamp sender message attachment reply-to-msgid))))))))
 
 (defvar *keybase--attachment-type-none* 0)
 (defvar *keybase--attachment-type-image* 1)
@@ -843,6 +877,38 @@ once it is received from the server."
                       (decode-coding-string (buffer-string) 'no-conversion))))
     (let ((image (create-image image-data nil t)))
       (insert-image image "[image]"))))
+
+(defun keybase--download-file (message-id attachment)
+  "downloads file and returns filepath given message"
+  (let* ((filename (keybase--json-find attachment
+                                       '(object filename)))
+         (out-filepath (make-temp-file "emacs-keybase-" nil filename)))
+    (keybase--request-chat-api `((method . "download")
+                                 (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                        (message_id . ,message-id)
+                                                        (output . ,out-filepath)))))))
+    out-filepath
+    ))
+
+(defun keybase--handle-attachment-message (json)
+  (let* ((message-id (keybase--json-find json
+                                         '(id)))
+         (sender (keybase--json-find json
+                                     '(sender username)))
+         (timestamp (keybase--json-find json
+                                        '(sent_at)))
+         (attachment (keybase--json-find json
+                                         '(content attachment))))
+    ;; (out-file (make-temp-file "emacs-keybase-"
+    ;;                           nil
+    ;;                           (format ".%s" filename)))
+    (progn
+      ;; (keybase--request-chat-api `((method . "download")
+      ;;                              (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+      ;;                                                     (message_id . ,message-id)
+      ;;                                                     (output . ,out-file)))))))
+      (keybase--insert-message message-id timestamp
+                               sender nil attachment))))
 
 (defun keybase--handle-image-message (json)
   (let* ((id         (keybase--json-find json '(id)))
@@ -865,6 +931,8 @@ once it is received from the server."
           (delete-file file))))))
 
 (cl-defun keybase--handle-incoming-chat-message (json)
+  ;; (setq check json)
+  ;; (message (format "%s" json))
   (let ((msg (keybase--json-find json '(msg) :error-if-missing nil)))
     (when msg
       (let* ((channel-info (keybase--parse-channel-name (keybase--json-find msg '(channel))))
@@ -879,7 +947,7 @@ once it is received from the server."
                     ((equal type "edit")
                      (keybase--handle-edit msg))
                     ((equal type "attachment")
-                     (keybase--handle-image-message msg))))))
+                     (keybase--handle-attachment-message msg))))))
         ;; We need to check mentions for all channels, not just the ones the user have opened
         (let ((at-mention-usernames (keybase--json-find msg '(at_mention_usernames) :error-if-missing nil))
               (username (with-current-buffer keybase--proc-buf keybase--username)))
