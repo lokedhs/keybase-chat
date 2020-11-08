@@ -707,8 +707,6 @@ ID may be nil, in which case this message represents an
 in-progress message which is inserted while a new message is
 being inserted. It will later be replaced with the real content
 once it is received from the server."
-  (message "HERE")
-  ;; (message attachment)
   (let ((inhibit-read-only t)
         (start (point)))
     (insert (propertize (funcall keybase-attribution sender timestamp)
@@ -760,8 +758,6 @@ attachment and inserts reference to file"
                                             fpath))))
 
 (defun keybase--insert-message (id timestamp sender message attachment &optional reply-to-msgid)
-  (message "here")
-  ;; (message attachment)
   (save-excursion
     (goto-char keybase--output-marker)
     (let ((new-pos (loop with prev-pos = (point)
