@@ -229,8 +229,10 @@ finished."
 
 (defun keybase-open-selected-button ()
   (interactive)
-  (let ((callback (get-char-property (point) 'button-function))
-        (data (get-char-property (point) 'button-data)))
+  (let ((callback (get-char-property (point)
+                                     'button-function))
+        (data (get-char-property (point)
+                                 'button-data)))
     (funcall callback data)))
 
 (cl-defun keybase--make-clickable-button (message function data)
@@ -240,6 +242,7 @@ finished."
               'mouse-face 'highlight
               'button-function function
               'button-data data))
+
 
 (defun keybase--get-message (msgid)
   "get message corresponding to msgid in context of current channel"
@@ -760,12 +763,17 @@ once it is received from the server."
                                        (list 'keybase-remote-message-id id))))))))
 
 
+
 (defun keybase--insert-attachment (msgid attachment)
   "given attachment object and message id, downloads the
 attachment and inserts reference to file"
   (let ((fpath (keybase--download-file msgid attachment))
         (fname (keybase--json-find attachment
                                    '(object filename))))
+    (message "HERE")
+    (print attachment)
+    (message (format "fname %s" fname))
+    (message (format "fpath %s" fpath))
     (insert (keybase--make-clickable-button fname 'find-file
                                             fpath))))
 
@@ -890,16 +898,17 @@ attachment and inserts reference to file"
   (let ((temp-dir (make-temp-file "emacs-keybase" t)))
     (concat temp-dir "/" fname)))
 
+
 (defun keybase--download-file (message-id attachment)
   "downloads file and returns filepath given message"
   (let* ((filename (keybase--json-find attachment
                                        '(object filename)))
-         (out-filepath (keybase--make-temp-file filename))
-         (keybase--request-chat-api `((method . "download")
-                                      (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                             (message_id . ,message-id)
-                                                             (output . ,out-filepath)))))))
-         out-filepath)))
+         (out-filepath (keybase--make-temp-file filename)))
+    (keybase--request-chat-api `((method . "download")
+                                 (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                        (message_id . ,message-id)
+                                                        (output . ,out-filepath)))))))
+    out-filepath))
 
 (defun keybase--handle-attachment-message (json)
   (let* ((message-id (keybase--json-find json
