@@ -770,10 +770,6 @@ attachment and inserts reference to file"
   (let ((fpath (keybase--download-file msgid attachment))
         (fname (keybase--json-find attachment
                                    '(object filename))))
-    (message "HERE")
-    (print attachment)
-    (message (format "fname %s" fname))
-    (message (format "fpath %s" fpath))
     (insert (keybase--make-clickable-button fname 'find-file
                                             fpath))))
 
