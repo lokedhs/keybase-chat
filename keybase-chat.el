@@ -360,16 +360,28 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
           (when (yes-or-no-p (format "Really change to '%s'? " new-message))
             (keybase--edit-message msgid new-message)))))))
 
+(defun keybase--temp-copy-remote (file-path)
+  (let ((tmp-file-path (keybase--make-temp-file (file-name-nondirectory file-path))))
+    (tramp-do-copy-or-rename-file 'copy file-path
+                                  tmp-file-path)
+    tmp-file-path))
+
 (defun keybase--send-file (file-path title)
   "sends given file with title"
-  (keybase--request-api-async keybase--program
-                              (list "chat" "api")
-                              `((method . "attach")
-                                (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                       (filename . ,file-path)
-                                                       (title . ,title))))))
-                              (lambda (json)
-                                nil)))
+  (let* ((remote-flag (string-prefix-p "/ssh" file-path))
+        (file-path (if remote-flag
+                       (keybase--temp-copy-remote file-path)
+                     file-path)))
+    (keybase--request-api-async keybase--program
+                                (list "chat" "api")
+                                `((method . "attach")
+                                  (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                         (filename . ,file-path)
+                                                         (title . ,title))))))
+                                (lambda (json)
+                                  nil))
+    (if remote-flag
+      (delete-file file-path))))
 
 (defun keybase-send-file ()
   (interactive)
@@ -874,17 +886,20 @@ attachment and inserts reference to file"
     (let ((image (create-image image-data nil t)))
       (insert-image image "[image]"))))
 
+(defun keybase--make-temp-file (fname)
+  (let ((temp-dir (make-temp-file "emacs-keybase" t)))
+    (concat temp-dir "/" fname)))
+
 (defun keybase--download-file (message-id attachment)
   "downloads file and returns filepath given message"
   (let* ((filename (keybase--json-find attachment
                                        '(object filename)))
-         (out-filepath (make-temp-file "emacs-keybase-" nil filename)))
-    (keybase--request-chat-api `((method . "download")
-                                 (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
-                                                        (message_id . ,message-id)
-                                                        (output . ,out-filepath)))))))
-    out-filepath
-    ))
+         (out-filepath (keybase--make-temp-file filename))
+         (keybase--request-chat-api `((method . "download")
+                                      (params . ((options . ((channel . ,(keybase--channel-info-as-json keybase--channel-info))
+                                                             (message_id . ,message-id)
+                                                             (output . ,out-filepath)))))))
+         out-filepath)))
 
 (defun keybase--handle-attachment-message (json)
   (let* ((message-id (keybase--json-find json
@@ -1371,5 +1386,10 @@ attachment and inserts reference to file"
     (with-current-buffer buffer
       (keybase--start-load-user-info user))
     (pop-to-buffer buffer)))
+
+
+(defun keybase-quit ()
+  (interactive)
+  (kill-buffer (keybase--find-process-buffer)))
 
 (provide 'keybase)
