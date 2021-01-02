@@ -116,6 +116,8 @@ not been confirmed from the server yet.")
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (cl-defun keybase--json-find (obj path &key (error-if-missing t))
+  ;; (print path)
+  ;; (print obj)
   (let ((curr obj))
     (loop for path-entry in path
           for node = (assoc path-entry curr)
@@ -372,9 +374,9 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 (defun keybase--send-file (file-path title)
   "sends given file with title"
   (let* ((remote-flag (string-prefix-p "/ssh" file-path))
-        (file-path (if remote-flag
-                       (keybase--temp-copy-remote file-path)
-                     file-path)))
+         (file-path (if remote-flag
+                        (keybase--temp-copy-remote file-path)
+                      file-path)))
     (keybase--request-api-async keybase--program
                                 (list "chat" "api")
                                 `((method . "attach")
@@ -382,9 +384,8 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
                                                          (filename . ,file-path)
                                                          (title . ,title))))))
                                 (lambda (json)
-                                  nil))
-    (if remote-flag
-      (delete-file file-path))))
+                                  (if remote-flag
+                                      (delete-file file-path))))))
 
 (defun keybase-send-file ()
   (interactive)
@@ -695,6 +696,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
 
 (defun keybase--insert-reply (msgid)
   "inserts message corresponding to message id in reply format"
+  ;; (print "keybase--insert-reply")
   (let ((msg-json (aref
                    (keybase--json-find
                     (keybase--request-chat-api `((method .  "get")
@@ -770,6 +772,7 @@ attachment and inserts reference to file"
   (let ((fpath (keybase--download-file msgid attachment))
         (fname (keybase--json-find attachment
                                    '(object filename))))
+    ;; (print "CALLED")
     (insert (keybase--make-clickable-button fname 'find-file
                                             fpath))))
 
