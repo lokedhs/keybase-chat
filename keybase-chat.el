@@ -713,7 +713,7 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
       (insert (propertize (string-join (list "\n| "
                                              (funcall keybase-attribution sender timestamp)
                                          "\n| "
-                                         (replace-in-string "\n" "\n| " msg)))
+                                         (dired-replace-in-string "\n" "\n| " msg)))
                           'face 'keybase-reply)))))
 
 
