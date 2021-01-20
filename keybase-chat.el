@@ -1400,4 +1400,4 @@ attachment and inserts reference to file"
   (interactive)
   (kill-buffer (keybase--find-process-buffer)))
 
-(provide 'keybase)
+(provide 'keybase-chat)
