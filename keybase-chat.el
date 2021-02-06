@@ -710,9 +710,9 @@ Each entry is of the form (CHANNEL-INFO UNREAD")
                               (sender (msg sender username))
                               (timestamp (msg sent_at_ms)))
         msg-json
-      (insert (propertize (string-join (list "\n| "
+      (insert (propertize (string-join (list "\n> "
                                              (funcall keybase-attribution sender timestamp)
-                                         "\n| "
+                                         "\n> "
                                          (dired-replace-in-string "\n" "\n| " msg)))
                           'face 'keybase-reply)))))
 
