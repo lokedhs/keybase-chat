@@ -1,0 +1,19 @@
+#+BIND: org-export-use-babel nil
+#+TITLE: README
+
+
+* Getting started
+Make sure variable =my-keybase-username= holds your keybase username:
+#+BEGIN_SRC emacs-lisp
+(setq my-keybase-username "username")
+#+END_SRC
+
+* Functionality
+- =M-x keybase= to open window with all chats
+
+- =keybase-open-chat= to select a chat to open
+
+- =C-c C-d= to delete message at point
+- =C-c C-e= to edit message at point
+- =C-c C-r= to reply to message at point
+- =C-c C-a= to select a file to send as an attachment
